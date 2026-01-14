@@ -1,0 +1,38 @@
+name: Daily Scrape
+
+on:
+  schedule:
+    - cron: '0 8 * * *' # Runs at 08:00 UTC every day
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        playwright install --with-deps chromium
+        
+    - name: Run Scraper
+      run: |
+        python scraper/scraper.py
+        
+    - name: Verify Data
+      run: |
+        python scraper/verify_data.py
+        
+    - name: Commit and push changes
+      uses: stefanzweifel/git-auto-commit-action@v4
+      with:
+        commit_message: Daily data update
+        file_pattern: index.html
