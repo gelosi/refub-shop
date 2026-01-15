@@ -1,4 +1,6 @@
 name: Daily Scrape
+permissions:
+  contents: write
 
 on:
   schedule:
@@ -36,3 +38,5 @@ jobs:
       with:
         commit_message: Daily data update
         file_pattern: index.html
+      env:
+        GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
