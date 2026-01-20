@@ -2,6 +2,8 @@
 
 > ⚠️ *Note: This is a "vibecoded" product. No responsibility is taken for missed deals using this software.*
 
+### [https://gelosi.github.io/refub-shop](https://gelosi.github.io/refub-shop)
+
 A "vibecoded" automation tool that scrapes Apple's Refurbished Store across varying countries and currencies to find the best deals on Macs. It generates a static standalone HTML dashboard for easy browsing and filtering.
 
 ## 🚀 Features
