@@ -179,8 +179,27 @@ def fetch_store_data(playwright, country_code, config):
                          
                          # Parse description from page
                          soup_prod = BeautifulSoup(prod_content, 'html.parser')
-                         # Try full text or specific meta
-                         full_page_text = soup_prod.get_text(" ", strip=True)
+                         # Try specific selectors first to avoid marketing/footer noise
+                         selectors = [
+                             '.rc-pdsection-panel.Overview-panel', 
+                             '.rc-pdsection-panel.TechSpecs-panel', 
+                             '.rf-tech-specs-section',
+                             '.rf-pdp-title'
+                         ]
+                         
+                         full_page_text = ""
+                         found_specific = False
+                         for sel in selectors:
+                             elements = soup_prod.select(sel)
+                             if elements:
+                                 found_specific = True
+                                 for el in elements:
+                                     full_page_text += " " + el.get_text(" ", strip=True)
+                         
+                         if not found_specific:
+                             # Fallback to full page text
+                             full_page_text = soup_prod.get_text(" ", strip=True)
+
                          specs_new, _ = parse_specs(full_page_text)
                          
                          if specs['ram'] is None: specs['ram'] = specs_new['ram']
@@ -250,13 +269,17 @@ def parse_specs(text):
         pass
 
     # SSD
-    # Standard: 256 GB SSD
-    # PL: "256 GB pamięci masowej", "512 GB pamięci masowej SSD"
-    # Generic regex must NOT match "pamięci" alone to avoid RAM confusion ("pamięci RAM")
-    ssd_match = re.search(r'(\d+)\s*(?:gb|go|tb|to)\s*(?:ssd|stockage|opslag|almacenamiento|lagring|úložiště|pamięci masowej)', text)
+    # Try specific Polish/Short format "SSD 256 GB" FIRST
+    ssd_match = re.search(r'ssd\s+(\d+)\s*(?:gb|go|tb|to)', text)
+
     if not ssd_match:
         # Dutch/Reverse style: "SSD van 256 GB"
         ssd_match = re.search(r'(?:ssd|opslag|stockage)\s*(?:van|de|von|z)\s*(\d+)\s*(?:gb|tb)', text)
+        
+    if not ssd_match:
+        # Fallback to generic "NUM GB ... SSD"
+        # Warning: This picks up "512 GB ... SSD" if it appears first
+        ssd_match = re.search(r'(\d+)\s*(?:gb|go|tb|to)\s*(?:ssd|stockage|opslag|almacenamiento|lagring|úložiště|pamięci masowej)', text)
         
     if ssd_match:
         val = int(ssd_match.group(1))
@@ -278,13 +301,15 @@ def parse_specs(text):
 
 
     # Chip
-    if 'm1' in text: specs['chip'] = 'M1'
-    if 'm2' in text: specs['chip'] = 'M2'
-    if 'm3' in text: specs['chip'] = 'M3'
-    if 'm4' in text: specs['chip'] = 'M4'
-    if 'pro' in text and specs['chip']: specs['chip'] += ' Pro'
-    if 'max' in text and specs['chip']: specs['chip'] += ' Max'
-    if 'ultra' in text and specs['chip']: specs['chip'] += ' Ultra'
+    # Search for "M1/M2/M3/M4" optionally followed by "Pro", "Max", "Ultra" directly
+    chip_match = re.search(r'\b(m[1-4])\s*(pro|max|ultra)?\b', text)
+    if chip_match:
+        base_chip = chip_match.group(1).upper() # e.g. M2
+        suffix = chip_match.group(2) # e.g. Pro
+        if suffix:
+            specs['chip'] = f"{base_chip} {suffix.capitalize()}"
+        else:
+            specs['chip'] = base_chip
     
     # Screen Size
     screen_match = re.search(r'(\d+[,.]\d+)["”]', text)
