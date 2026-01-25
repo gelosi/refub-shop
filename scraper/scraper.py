@@ -365,6 +365,7 @@ def generate_html(all_products):
     <div class="header">
         <h1>Apple Refurbished Tracker</h1>
         <p>Tracking {len(all_products)} items across {len(countries)} countries</p>
+        <p style="font-size: 14px; color: #86868b; margin-top: 5px;">Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
     </div>
 
     <div class="controls">
