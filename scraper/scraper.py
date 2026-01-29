@@ -246,7 +246,7 @@ def parse_specs(text):
     
     # RAM
     ram_patterns = [
-        r'(\d+)\s*(?:gb|go)\s*(?:unified memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|zunifikowanej\s*pamięci|pamięć\s*ram|centraal\s*geheugen|geheugen)',
+        r'(\d+)\s*(?:gb|go)\s*(?:de\s+)?(?:unified memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|zunifikowanej\s*pamięci|pamięć\s*ram|centraal\s*geheugen|geheugen)',
         r'(\d+)\s*(?:gb|go)\s*(?:ram|memory|arbeitsspeicher|mémoire|pamięć|geheugen)',
         r'(\d+)\s*(?:gb|go)', # Fallback
     ]
@@ -274,7 +274,7 @@ def parse_specs(text):
 
     if not ssd_match:
         # Dutch/Reverse style: "SSD van 256 GB"
-        ssd_match = re.search(r'(?:ssd|opslag|stockage)\s*(?:van|de|von|z)\s*(\d+)\s*(?:gb|tb)', text)
+        ssd_match = re.search(r'(?:ssd|opslag|stockage)\s*(?:van|de|von|z)\s*(\d+)\s*(?:gb|go|tb|to)', text)
         
     if not ssd_match:
         # Fallback to generic "NUM GB ... SSD"
