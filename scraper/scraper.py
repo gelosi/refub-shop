@@ -49,7 +49,7 @@ STORES = {
         "base_url": "https://www.apple.com/pl/shop/refurbished",
         "currency_symbol": "zł",
         "currency_label": "PLN",
-        "rate_to_eur": 0.23, # Approx
+        "rate_to_eur": 0.23,
     },
     "AT": {
         "base_url": "https://www.apple.com/at/shop/refurbished",
@@ -63,22 +63,19 @@ STORES = {
         "currency_label": "EUR",
         "rate_to_eur": 1.0,
     },
-
-    "CH": { # Swiss German
+    "CH": {
         "base_url": "https://www.apple.com/ch-de/shop/refurbished",
         "currency_symbol": "CHF",
         "currency_label": "CHF",
-        "rate_to_eur": 1.07, # Approx
+        "rate_to_eur": 1.07,
     },
-    # Nordic/Baltic/Central EU stores often don't exist (404), so we exclude them to prevent errors.
-    # Confirmed 404: SE, DK, NO, FI, CZ, SI, HU, LU, PT
     "IT": {
         "base_url": "https://www.apple.com/it/shop/refurbished",
         "currency_symbol": "€",
         "currency_label": "EUR",
         "rate_to_eur": 1.0,
     },
-    "BE": { # Belgium (French)
+    "BE": {
         "base_url": "https://www.apple.com/be-fr/shop/refurbished",
         "currency_symbol": "€",
         "currency_label": "EUR",
@@ -88,7 +85,7 @@ STORES = {
         "base_url": "https://www.apple.com/uk/shop/refurbished",
         "currency_symbol": "£",
         "currency_label": "GBP",
-        "rate_to_eur": 1.17, # Approx
+        "rate_to_eur": 1.17,
     }
 }
 
@@ -151,7 +148,7 @@ def fetch_store_data(playwright, country_code, config):
                         clean_price = re.sub(r'[^\d.,]', '', price_text)
                         
                         # Decimal Separator Logic (reused)
-                        is_comma_decimal_country = country_code in ['DE', 'FR', 'PL', 'NL', 'ES', 'PT', 'AT', 'CZ', 'SE', 'DK', 'SI', 'CH']
+                        is_comma_decimal_country = country_code in ['DE', 'FR', 'PL', 'NL', 'ES', 'AT', 'CH', 'IT', 'BE']
                         
                         if ',' in clean_price and '.' in clean_price:
                             last_comma = clean_price.rfind(',')
@@ -569,6 +566,9 @@ def main():
     with sync_playwright() as p:
         for country in valid_countries:
             config = STORES[country]
+            if 'base_url' not in config:
+                print(f"Skipping {country}: Missing base_url")
+                continue
             print(f"Processing store: {country} ({config['base_url']})")
             items = fetch_store_data(p, country, config)
             print(f"Found {len(items)} items in {country}")
