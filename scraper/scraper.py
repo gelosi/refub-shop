@@ -6,6 +6,17 @@ import os
 from datetime import datetime
 import time
 import argparse
+import urllib.request
+
+def fetch_exchange_rates():
+    try:
+        url = "https://open.er-api.com/v6/latest/EUR"
+        with urllib.request.urlopen(url) as response:
+            data = json.loads(response.read().decode())
+            return data.get('rates', {})
+    except Exception as e:
+        print(f"Warning: Failed to fetch exchange rates ({e}). Using hardcoded fallbacks.")
+        return {}
 
 # Configuration
 # Configuration
@@ -539,6 +550,21 @@ def main():
 
     print("Starting Playwright Scraper...")
     all_items = []
+
+    # Fetch and update exchange rates
+    rates = fetch_exchange_rates()
+    if rates:
+        print("Updating exchange rates...")
+        for country, config in STORES.items():
+            currency = config['currency_label']
+            if currency == 'EUR':
+                config['rate_to_eur'] = 1.0
+            elif currency in rates and rates[currency] > 0:
+                # API gives X Currency per 1 EUR. We want EUR per 1 Currency.
+                # So rate_to_eur = 1 / rate
+                new_rate = 1.0 / rates[currency]
+                print(f"  {country} ({currency}): {config['rate_to_eur']} -> {new_rate:.4f}")
+                config['rate_to_eur'] = new_rate
     
     with sync_playwright() as p:
         for country in valid_countries:
