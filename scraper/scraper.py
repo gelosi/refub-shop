@@ -52,10 +52,7 @@ STORES = {
         "currency_label": "EUR",
         "rate_to_eur": 1.0,
     },
-    "PT": { # Not verified / 404
-        # "base_url": "https://www.apple.com/pt/shop/refurbished", 
-        # Removed as it returns 404
-    },
+
     "CH": { # Swiss German
         "base_url": "https://www.apple.com/ch-de/shop/refurbished",
         "currency_symbol": "CHF",
@@ -273,8 +270,8 @@ def parse_specs(text, category='mac'):
     # RAM (Mostly for Mac)
     if not is_accessory and category == 'mac':
         ram_patterns = [
-            r'(\d+)\s*(?:gb|go)\s*(?:de\s+)?(?:unified memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|zunifikowanej\s*pamięci|pamięć\s*ram|centraal\s*geheugen|geheugen)',
-            r'(\d+)\s*(?:gb|go)\s*(?:ram|memory|arbeitsspeicher|mémoire|pamięć|geheugen)',
+            r'(\d+)\s*(?:gb|go)\s*(?:de\s+)?(?:unified memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|zunifikowanej\s*pamięci|pamięć\s*ram|centraal\s*geheugen|geheugen|memoria\s*unificada|memoria\s*unificata)',
+            r'(\d+)\s*(?:gb|go)\s*(?:ram|memory|arbeitsspeicher|mémoire|pamięć|geheugen|memoria)',
             r'(\d+)\s*(?:gb|go)', # Fallback
         ]
         
