@@ -8,86 +8,89 @@ import time
 import argparse
 
 # Configuration
+# Configuration
 STORES = {
     "DE": {
-        "url": "https://www.apple.com/de/shop/refurbished/mac",
+        "base_url": "https://www.apple.com/de/shop/refurbished",
         "currency_symbol": "€",
         "currency_label": "EUR",
         "rate_to_eur": 1.0,
     },
     "IE": {
-        "url": "https://www.apple.com/ie/shop/refurbished/mac",
+        "base_url": "https://www.apple.com/ie/shop/refurbished",
         "currency_symbol": "€",
         "currency_label": "EUR",
         "rate_to_eur": 1.0,
     },
     "NL": {
-        "url": "https://www.apple.com/nl/shop/refurbished/mac",
+        "base_url": "https://www.apple.com/nl/shop/refurbished",
         "currency_symbol": "€",
         "currency_label": "EUR",
         "rate_to_eur": 1.0,
     },
     "FR": {
-        "url": "https://www.apple.com/fr/shop/refurbished/mac",
+        "base_url": "https://www.apple.com/fr/shop/refurbished",
         "currency_symbol": "€",
         "currency_label": "EUR",
         "rate_to_eur": 1.0,
     },
     "PL": {
-        "url": "https://www.apple.com/pl/shop/refurbished/mac",
+        "base_url": "https://www.apple.com/pl/shop/refurbished",
         "currency_symbol": "zł",
         "currency_label": "PLN",
         "rate_to_eur": 0.23, # Approx
     },
     "AT": {
-        "url": "https://www.apple.com/at/shop/refurbished/mac",
+        "base_url": "https://www.apple.com/at/shop/refurbished",
         "currency_symbol": "€",
         "currency_label": "EUR",
         "rate_to_eur": 1.0,
     },
     "ES": {
-        "url": "https://www.apple.com/es/shop/refurbished/mac",
+        "base_url": "https://www.apple.com/es/shop/refurbished",
         "currency_symbol": "€",
         "currency_label": "EUR",
         "rate_to_eur": 1.0,
     },
     "PT": {
-        "url": "https://www.apple.com/pt/shop/refurbished/mac",
+        "base_url": "https://www.apple.com/pt/shop/refurbished",
         "currency_symbol": "€",
         "currency_label": "EUR",
         "rate_to_eur": 1.0,
     },
     "CH": { # Swiss German
-        "url": "https://www.apple.com/ch-de/shop/refurbished/mac",
+        "base_url": "https://www.apple.com/ch-de/shop/refurbished",
         "currency_symbol": "CHF",
         "currency_label": "CHF",
         "rate_to_eur": 1.07, # Approx
     },
     "SE": {
-        "url": "https://www.apple.com/se/shop/refurbished/mac",
+        "base_url": "https://www.apple.com/se/shop/refurbished",
         "currency_symbol": "kr",
         "currency_label": "SEK",
         "rate_to_eur": 0.088, # Approx
     },
     "DK": {
-        "url": "https://www.apple.com/dk/shop/refurbished/mac",
+        "base_url": "https://www.apple.com/dk/shop/refurbished",
         "currency_symbol": "kr.",
         "currency_label": "DKK",
         "rate_to_eur": 0.13, # Approx
     },
     "CZ": {
-        "url": "https://www.apple.com/cz/shop/refurbished/mac",
+        "base_url": "https://www.apple.com/cz/shop/refurbished",
         "currency_symbol": "Kč",
         "currency_label": "CZK",
         "rate_to_eur": 0.040, # Approx
     },
-    "SI": { # Use standard EU structure, check validity later
-        "url": "https://www.apple.com/si/shop/refurbished/mac",
+    "SI": { # Use standard EU structure
+        "base_url": "https://www.apple.com/si/shop/refurbished",
         "currency_symbol": "€",
         "currency_label": "EUR",
         "rate_to_eur": 1.0,
     }
 }
+
+CATEGORIES = ['mac', 'ipad', 'iphone', 'watch', 'appletv', 'accessories']
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36"
 OUTPUT_FILE = "index.html"
@@ -95,144 +98,157 @@ OUTPUT_FILE = "index.html"
 def fetch_store_data(playwright, country_code, config):
     print(f"Fetching data for {country_code}...")
     browser = playwright.chromium.launch(headless=True)
-    page = browser.new_page()
     
-    items = []
+    all_category_items = []
     
-    try:
-        page.goto(config['url'], timeout=60000)
+    for category in CATEGORIES:
+        url = f"{config['base_url']}/{category}"
+        print(f"  Scanning {category} at {url}...")
         
-        # Incremental scroll to trigger lazy loading
-        for _ in range(10): 
-            page.evaluate("window.scrollBy(0, 1000)")
-            time.sleep(0.5)
+        page = browser.new_page()
+        items = []
+        
+        try:
+            page.goto(url, timeout=60000)
             
-        content = page.content()
-        soup = BeautifulSoup(content, 'html.parser')
-        
-        # Select product tiles
-        tiles = soup.select('.rf-refurb-producttile')
-        
-        for tile in tiles:
-            try:
-                title_elem = tile.select_one('h3 a')
-                if not title_elem:
-                    continue
-                    
-                name = title_elem.get_text(strip=True)
-                url = "https://www.apple.com" + title_elem['href']
-                
-                # Image
-                img_elem = tile.select_one('img')
-                image = img_elem['src'] if img_elem else ""
-                
-                # Price Parsing
-                price = 0
-                price_text = ""
-                price_elem = tile.select_one('span.rf-refurb-producttile-currentprice')
-                if price_elem:
-                    price_text = price_elem.get_text(strip=True)
-                    # Clean price
-                    clean_price = re.sub(r'[^\d.,]', '', price_text)
-                    
-                    # Decimal Separator Logic for EU/Different formats
-                    # Countries using comma decimal: DE, FR, PL, CH (mostly), NL, ES, PT, AT, CZ, SE, DK, SI
-                    # Actually:
-                    # UK/IE/US: dot decimal, comma thousands (1,234.56)
-                    # EU (most): comma decimal, dot thousands (1.234,56)
-                    # CH: dot decimal usually for currency? 'CHF 1’234.56' or comma. 
-                    
-                    is_comma_decimal_country = country_code in ['DE', 'FR', 'PL', 'NL', 'ES', 'PT', 'AT', 'CZ', 'SE', 'DK', 'SI', 'CH']
-                    
-                    if ',' in clean_price and '.' in clean_price:
-                        # Ambiguous: detect by position
-                        last_comma = clean_price.rfind(',')
-                        last_dot = clean_price.rfind('.')
-                        if last_comma > last_dot: # 1.234,56
-                             clean_price = clean_price.replace('.', '').replace(',', '.')
-                        else: # 1,234.56
-                             clean_price = clean_price.replace(',', '')
-                    elif ',' in clean_price:
-                        if is_comma_decimal_country:
-                             clean_price = clean_price.replace(',', '.')
-                        else:
-                             clean_price = clean_price.replace(',', '')
-                    # else: only dots or plain number, python float handles it (if dot)
-                    
-                    try:
-                        price = float(clean_price)
-                        # Correct currency conversion would happen here if we used rate_to_eur
-                    except:
-                        price = 0
+            # Check if 404 or redirect to home (some categories might be missing in some countries)
+            if "as-refurbished" not in page.url and category not in page.url:
+                pass
 
-                # Specs Fallback
-                raw_text = tile.get_text(" ", strip=True)
-                specs, _ = parse_specs(raw_text)
+            # Incremental scroll to trigger lazy loading
+            for _ in range(5): 
+                page.evaluate("window.scrollBy(0, 1000)")
+                time.sleep(0.5)
                 
-                # Fallback to visiting product page if specs missing
-                if specs['ram'] is None or specs['ssd'] is None:
-                     print(f"  Missing specs for '{name[:40]}...' -> visiting product page...")
-                     try:
-                         page_prod = browser.new_page()
-                         page_prod.goto(url, timeout=30000)
-                         prod_content = page_prod.content()
-                         
-                         # Parse description from page
-                         soup_prod = BeautifulSoup(prod_content, 'html.parser')
-                         # Try specific selectors first to avoid marketing/footer noise
-                         selectors = [
-                             '.rc-pdsection-panel.Overview-panel', 
-                             '.rc-pdsection-panel.TechSpecs-panel', 
-                             '.rf-tech-specs-section',
-                             '.rf-pdp-title'
-                         ]
-                         
-                         full_page_text = ""
-                         found_specific = False
-                         for sel in selectors:
-                             elements = soup_prod.select(sel)
-                             if elements:
-                                 found_specific = True
+            content = page.content()
+            soup = BeautifulSoup(content, 'html.parser')
+            
+            # Select product tiles
+            tiles = soup.select('.rf-refurb-producttile')
+            
+            for tile in tiles:
+                try:
+                    title_elem = tile.select_one('h3 a')
+                    if not title_elem:
+                        continue
+                        
+                    name = title_elem.get_text(strip=True)
+                    item_url = "https://www.apple.com" + title_elem['href']
+                    
+                    # Image
+                    img_elem = tile.select_one('img')
+                    image = img_elem['src'] if img_elem else ""
+                    
+                    # Price Parsing
+                    price = 0
+                    price_text = ""
+                    price_elem = tile.select_one('span.rf-refurb-producttile-currentprice')
+                    if price_elem:
+                        price_text = price_elem.get_text(strip=True)
+                        # Clean price
+                        clean_price = re.sub(r'[^\d.,]', '', price_text)
+                        
+                        # Decimal Separator Logic (reused)
+                        is_comma_decimal_country = country_code in ['DE', 'FR', 'PL', 'NL', 'ES', 'PT', 'AT', 'CZ', 'SE', 'DK', 'SI', 'CH']
+                        
+                        if ',' in clean_price and '.' in clean_price:
+                            last_comma = clean_price.rfind(',')
+                            last_dot = clean_price.rfind('.')
+                            if last_comma > last_dot: clean_price = clean_price.replace('.', '').replace(',', '.')
+                            else: clean_price = clean_price.replace(',', '')
+                        elif ',' in clean_price:
+                            if is_comma_decimal_country: clean_price = clean_price.replace(',', '.')
+                            else: clean_price = clean_price.replace(',', '')
+                        
+                        try:
+                            price = float(clean_price)
+                        except:
+                            price = 0
+    
+                    # Specs
+                    raw_text = tile.get_text(" ", strip=True)
+                    specs, _ = parse_specs(raw_text, category)
+                    
+                    # Fallback visit logic
+                    # Only check RAM missing for Macs.
+                    # Check SSD for Mac, iPad, iPhone, AppleTV (AppleTV has capacity).
+                    # Watch and Accessories might not clearly state capacity in title or use different format, so skip forced check.
+        
+                    check_ram = (category == 'mac') 
+                    check_ssd = (category in ['mac', 'ipad', 'iphone', 'appletv'])
+                    
+                    # Strictness check
+                    missing_important = False
+                    if check_ram and specs['ram'] is None: missing_important = True
+                    if check_ssd and specs['ssd'] is None: missing_important = True
+                    
+                    if missing_important and specs['device_type'] not in ['Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'Accessory']:
+                         print(f"    Missing specs ({category}) for '{name[:30]}...' -> visiting page...")
+                         try:
+                             page_prod = browser.new_page()
+                             page_prod.goto(item_url, timeout=30000)
+                             prod_content = page_prod.content()
+                             
+                             soup_prod = BeautifulSoup(prod_content, 'html.parser')
+                             selectors = [
+                                 '.rc-pdsection-panel.Overview-panel', 
+                                 '.rc-pdsection-panel.TechSpecs-panel', 
+                                 '.rf-tech-specs-section',
+                                 '.rf-pdp-title'
+                             ]
+                             
+                             full_page_text = ""
+                             for sel in selectors:
+                                 elements = soup_prod.select(sel)
                                  for el in elements:
                                      full_page_text += " " + el.get_text(" ", strip=True)
-                         
-                         if not found_specific:
-                             # Fallback to full page text
-                             full_page_text = soup_prod.get_text(" ", strip=True)
+                             
+                             if not full_page_text.strip():
+                                 full_page_text = soup_prod.get_text(" ", strip=True)
+    
+                             specs_new, _ = parse_specs(full_page_text, category)
+                             
+                             if specs['ram'] is None: specs['ram'] = specs_new['ram']
+                             if specs['ssd'] is None: specs['ssd'] = specs_new['ssd']
+                             if specs['chip'] is None: specs['chip'] = specs_new['chip']
+                             if specs['screen'] is None: specs['screen'] = specs_new['screen']
+                             if specs_new['device_type'] != 'Device': specs['device_type'] = specs_new['device_type']
+                             
+                             page_prod.close()
+                         except Exception as e:
+                             print(f"    Failed to visit page: {e}")
+    
+                    # Recategorize accessories found in other sections (e.g. Pencil in iPad section)
+                    final_category = category
+                    if specs['device_type'] in ['Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'HomePod', 'Accessory']:
+                        final_category = 'accessories'
 
-                         specs_new, _ = parse_specs(full_page_text)
-                         
-                         if specs['ram'] is None: specs['ram'] = specs_new['ram']
-                         if specs['ssd'] is None: specs['ssd'] = specs_new['ssd']
-                         if specs['chip'] is None: specs['chip'] = specs_new['chip']
-                         if specs['screen'] is None: specs['screen'] = specs_new['screen']
-                         
-                         page_prod.close()
-                     except Exception as e:
-                         print(f"  Failed to visit product page: {e}")
+                    prod = {
+                        "country": country_code,
+                        "category": final_category,
+                        "name": name,
+                        "price": price,
+                        "currency": config['currency_label'],
+                        "price_eur": round(price * config['rate_to_eur'], 2),
+                        "image": image,
+                        "url": item_url,
+                        "specs": specs
+                    }
+                    items.append(prod)
+                    
+                except Exception as e:
+                     continue
+                     
+        except Exception as e:
+            print(f"Error processing {country_code} {category}: {e}")
+            
+        page.close()
+        all_category_items.extend(items)
 
-                prod = {
-                    "country": country_code,
-                    "name": name,
-                    "price": price,
-                    "currency": config['currency_label'],
-                    "price_eur": round(price * config['rate_to_eur'], 2),
-                    "image": image,
-                    "url": url,
-                    "specs": specs
-                }
-                items.append(prod)
-                
-            except Exception as e:
-                 print(f"Error parsing tile: {e}")
-                 continue
-                 
-    except Exception as e:
-        print(f"Error processing {country_code}: {e}")
+    browser.close()
+    return all_category_items
 
-    return items
-
-def parse_specs(text):
+def parse_specs(text, category='mac'):
     # Normalize unicode spaces (NBSP)
     text = text.replace('\u00a0', ' ').replace('\u2009', ' ').replace('\u202f', ' ')
     text = text.lower()
@@ -241,95 +257,136 @@ def parse_specs(text):
         "ssd": None,
         "chip": None,
         "screen": None,
-        "device_type": "Mac" # Default since we are scraping /mac
+        "device_type": "Device"
     }
     
-    # RAM
-    ram_patterns = [
-        r'(\d+)\s*(?:gb|go)\s*(?:de\s+)?(?:unified memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|zunifikowanej\s*pamięci|pamięć\s*ram|centraal\s*geheugen|geheugen)',
-        r'(\d+)\s*(?:gb|go)\s*(?:ram|memory|arbeitsspeicher|mémoire|pamięć|geheugen)',
-        r'(\d+)\s*(?:gb|go)', # Fallback
-    ]
+    # Global Accessory Detection (Prioritized)
+    # Detect Pencils, Keyboards, etc. regardless of category context
+    if 'pencil' in text: # "Apple Pencil" usually
+        specs['device_type'] = 'Apple Pencil'
+    elif 'mouse' in text or 'souris' in text or 'maus' in text or 'ratón' in text:
+        specs['device_type'] = 'Mouse'
+    elif 'trackpad' in text:
+        specs['device_type'] = 'Trackpad'
+    elif 'keyboard' in text or 'clavier' in text or 'tastatur' in text or 'teclado' in text:
+        specs['device_type'] = 'Keyboard'
+    elif 'homepod' in text:
+        specs['device_type'] = 'HomePod'
     
-    # Refined RAM: look for number + GB/Go followed by known RAM keywords within N characters
-    # Or number + GB/Go if it doesn't match SSD pattern.
-    
-    # Let's stick to the safer patterns first
-    for pattern in ram_patterns[:2]:
-         ram_match = re.search(pattern, text)
-         if ram_match:
-             specs['ram'] = int(ram_match.group(1))
-             break
-    
-    if specs['ram'] is None:
-        # Try finding just number + GB but ensure it's not SSD
-        # This is hard without lookaheads/behinds or complex logic.
-        # Simple fallback for now: if we see "8GB" and haven't matched SSD yet, maybe it's RAM? 
-        # But usually SSD is larger.
-        pass
+    # If identified as accessory, we can skip other checks or be careful not to overwrite
+    is_accessory = specs['device_type'] in ['Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'HomePod']
+
+    # RAM (Mostly for Mac)
+    if not is_accessory and category == 'mac':
+        ram_patterns = [
+            r'(\d+)\s*(?:gb|go)\s*(?:de\s+)?(?:unified memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|zunifikowanej\s*pamięci|pamięć\s*ram|centraal\s*geheugen|geheugen)',
+            r'(\d+)\s*(?:gb|go)\s*(?:ram|memory|arbeitsspeicher|mémoire|pamięć|geheugen)',
+            r'(\d+)\s*(?:gb|go)', # Fallback
+        ]
+        
+        for pattern in ram_patterns[:2]:
+             ram_match = re.search(pattern, text)
+             if ram_match:
+                 specs['ram'] = int(ram_match.group(1))
+                 break
+        
+        if specs['ram'] is None:
+            pass
 
     # SSD
-    # Try specific Polish/Short format "SSD 256 GB" FIRST
-    ssd_match = re.search(r'ssd\s+(\d+)\s*(?:gb|go|tb|to)', text)
-
-    if not ssd_match:
-        # Dutch/Reverse style: "SSD van 256 GB"
-        ssd_match = re.search(r'(?:ssd|opslag|stockage)\s*(?:van|de|von|z)\s*(\d+)\s*(?:gb|go|tb|to)', text)
+    if not is_accessory:
+        ssd_match = re.search(r'ssd\s+(\d+)\s*(?:gb|go|tb|to)', text)
+    
+        if not ssd_match:
+            ssd_match = re.search(r'(?:ssd|opslag|stockage)\s*(?:van|de|von|z)\s*(\d+)\s*(?:gb|go|tb|to)', text)
+            
+        if not ssd_match:
+            # Fallback
+            ssd_match = re.search(r'(\d+)\s*(?:gb|go|tb|to)\s*(?:ssd|stockage|opslag|almacenamiento|lagring|úložiště|pamięci masowej)', text)
+            
+        if ssd_match:
+            val = int(ssd_match.group(1))
+            full_match = ssd_match.group(0)
+            if 'tb' in full_match or 'to' in full_match:
+                val *= 1024
+            specs['ssd'] = val
         
-    if not ssd_match:
-        # Fallback to generic "NUM GB ... SSD"
-        # Warning: This picks up "512 GB ... SSD" if it appears first
-        ssd_match = re.search(r'(\d+)\s*(?:gb|go|tb|to)\s*(?:ssd|stockage|opslag|almacenamiento|lagring|úložiště|pamięci masowej)', text)
-        
-    if ssd_match:
-        val = int(ssd_match.group(1))
-        # Check for TB/To unit
-        full_match = ssd_match.group(0)
-        if 'tb' in full_match or 'to' in full_match:
-            val *= 1024
-        specs['ssd'] = val
-        
-    # If generic 16 GB regex matched but we are unsure if it's RAM or SSD:
-    if specs['ram'] is None:
-         # Find all "XX GB"
-         matches = re.findall(r'(\d+)\s*(?:gb|go)', text)
-         # Heuristic: usually smaller number is RAM, larger is SSD.
-         # But M4 max can have 128GB RAM.
-         # This is risky. 
-         # Let's try to see if the text near "16 GB" contains "memory" or "arbeitsspeicher" even if unrelated characters in between.
-         pass
+        # Allow simple GB search for iPad/iPhone/AppleTV if no "SSD" keyword found
+        if specs['ssd'] is None and category in ['ipad', 'iphone', 'appletv']:
+             simple_gb = re.search(r'(\d+)\s*(?:gb|go|tb|to)', text)
+             if simple_gb:
+                 val = int(simple_gb.group(1))
+                 if 'tb' in simple_gb.group(0) or 'to' in simple_gb.group(0): val *= 1024
+                 specs['ssd'] = val
 
 
     # Chip
-    # Search for "M1/M2/M3/M4" optionally followed by "Pro", "Max", "Ultra" directly
+    # M-series
     chip_match = re.search(r'\b(m[1-4])\s*(pro|max|ultra)?\b', text)
     if chip_match:
-        base_chip = chip_match.group(1).upper() # e.g. M2
-        suffix = chip_match.group(2) # e.g. Pro
-        if suffix:
-            specs['chip'] = f"{base_chip} {suffix.capitalize()}"
-        else:
-            specs['chip'] = base_chip
+        base_chip = chip_match.group(1).upper() 
+        suffix = chip_match.group(2) 
+        if suffix: specs['chip'] = f"{base_chip} {suffix.capitalize()}"
+        else: specs['chip'] = base_chip
     
-    # Screen Size
+    # A-series (for iPad/iPhone/TV)
+    if specs['chip'] is None:
+        a_chip = re.search(r'\b(a\d{2}[zx]?)\b', text) # A12, A12Z, A14...
+        if a_chip:
+            specs['chip'] = a_chip.group(1).upper()
+
+    # Screen Size (Watch size / Screen)
     screen_match = re.search(r'(\d+[,.]\d+)["”]', text)
     if screen_match:
         specs['screen'] = float(screen_match.group(1).replace(',', '.'))
+    elif category == 'watch':
+        # Watch Case Size (mm)
+        mm_match = re.search(r'(\d+)\s*mm', text)
+        if mm_match:
+             specs['screen'] = int(mm_match.group(1)) # Treat 'screen' field as size for watch
     
     # Device Type refine
-    if 'macbook air' in text: specs['device_type'] = 'MacBook Air'
-    elif 'macbook pro' in text: specs['device_type'] = 'MacBook Pro'
-    elif 'mini' in text: specs['device_type'] = 'Mac mini'
-    elif 'imac' in text: specs['device_type'] = 'iMac'
-    elif 'studio' in text: specs['device_type'] = 'Mac Studio'
-    elif 'pro' in text and 'mac' in text: specs['device_type'] = 'Mac Pro'
+    if specs['device_type'] == 'Device': # Only if not already identified as accessory
+        if category == 'mac':
+            specs['device_type'] = 'Mac'
+            if 'macbook air' in text: specs['device_type'] = 'MacBook Air'
+            elif 'macbook pro' in text: specs['device_type'] = 'MacBook Pro'
+            elif 'mini' in text: specs['device_type'] = 'Mac mini'
+            elif 'imac' in text: specs['device_type'] = 'iMac'
+            elif 'studio' in text: specs['device_type'] = 'Mac Studio'
+            elif 'pro' in text and 'mac' in text: specs['device_type'] = 'Mac Pro'
+        elif category == 'ipad':
+            specs['device_type'] = 'iPad'
+            if 'ipad pro' in text: specs['device_type'] = 'iPad Pro'
+            elif 'ipad air' in text: specs['device_type'] = 'iPad Air'
+            elif 'ipad mini' in text: specs['device_type'] = 'iPad mini'
+        elif category == 'iphone':
+            specs['device_type'] = 'iPhone'
+            model_match = re.search(r'iphone\s+(\d+\s*(?:pro|max|plus|mini)?)', text)
+            if model_match:
+                specs['device_type'] = f"iPhone {model_match.group(1).title()}"
+        elif category == 'watch':
+            specs['device_type'] = 'Apple Watch'
+            if 'ultra' in text: specs['device_type'] = 'Apple Watch Ultra'
+            elif 'se' in text: specs['device_type'] = 'Apple Watch SE'
+            else:
+                series = re.search(r'series\s+(\d+)', text)
+                if series: specs['device_type'] = f"Apple Watch Series {series.group(1)}"
+        elif category == 'appletv':
+            specs['device_type'] = 'Apple TV'
+            if '4k' in text: specs['device_type'] = 'Apple TV 4K'
+            if 'hd' in text: specs['device_type'] = 'Apple TV HD'
+        elif category == 'accessories':
+            specs['device_type'] = 'Accessory'
 
     return specs, text 
 
 def generate_html(all_products):
     # Determine unique filter values
     countries = sorted(list(set(p['country'] for p in all_products)))
+    categories = sorted(list(set(p['category'] for p in all_products)))
     device_types = sorted(list(set(p['specs']['device_type'] for p in all_products)))
+    # For filters, maybe we should separate by category or just list all
     ram_options = sorted(list(set(p['specs']['ram'] for p in all_products if p['specs']['ram'] is not None)))
     ssd_options = sorted(list(set(p['specs']['ssd'] for p in all_products if p['specs']['ssd'] is not None)))
 
@@ -344,6 +401,7 @@ def generate_html(all_products):
     <style>
         body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f5f5f7; margin: 0; padding: 20px; }}
         .header {{ text-align: center; margin-bottom: 30px; }}
+        .header h1 {{ margin-bottom: 10px; }}
         .controls {{ display: flex; gap: 15px; justify-content: center; margin-bottom: 20px; flex-wrap: wrap; }}
         select {{ padding: 8px; border-radius: 8px; border: 1px solid #d2d2d7; font-size: 14px; }}
         .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; max-width: 1200px; margin: 0 auto; }}
@@ -352,6 +410,7 @@ def generate_html(all_products):
         .image-container {{ height: 200px; display: flex; align-items: center; justify-content: center; padding: 20px; background: white; }}
         .image-container img {{ max-height: 100%; max-width: 100%; object-fit: contain; }}
         .content {{ padding: 20px; flex-grow: 1; display: flex; flex-direction: column; }}
+        .category-label {{ font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #86868b; margin-bottom: 4px; font-weight: 600; }}
         .title {{ font-size: 16px; font-weight: 600; margin-bottom: 8px; color: #1d1d1f; line-height: 1.4; }}
         .specs {{ font-size: 12px; color: #86868b; margin-bottom: 12px; flex-grow: 1; }}
         .price-row {{ display: flex; justify-content: space-between; align-items: flex-end; margin-top: 10px; }}
@@ -372,6 +431,10 @@ def generate_html(all_products):
         <select id="countryFilter" onchange="renderGrid()">
             <option value="All">All Countries</option>
             {''.join(f'<option value="{c}">{c}</option>' for c in countries)}
+        </select>
+        <select id="categoryFilter" onchange="renderGrid()">
+            <option value="All">All Categories</option>
+            {''.join(f'<option value="{cat}">{cat.title()}</option>' for cat in categories)}
         </select>
         <select id="deviceFilter" onchange="renderGrid()">
             <option value="All">All Devices</option>
@@ -403,6 +466,7 @@ def generate_html(all_products):
 
         function renderGrid() {{
             const country = document.getElementById('countryFilter').value;
+            const category = document.getElementById('categoryFilter').value;
             const device = document.getElementById('deviceFilter').value;
             const ram = document.getElementById('ramFilter').value;
             const ssd = document.getElementById('ssdFilter').value;
@@ -413,6 +477,7 @@ def generate_html(all_products):
 
             let filtered = products.filter(p => {{
                 return (country === 'All' || p.country === country) &&
+                       (category === 'All' || p.category === category) &&
                        (device === 'All' || p.specs.device_type === device) &&
                        (ram === 'All' || (p.specs.ram && p.specs.ram.toString() === ram)) &&
                        (ssd === 'All' || (p.specs.ssd && p.specs.ssd.toString() === ssd));
@@ -444,6 +509,7 @@ def generate_html(all_products):
                     <div class="content">
                         <div>
                             <span class="country-tag">${{p.country}}</span>
+                            <span class="category-label">${{p.category.toUpperCase()}}</span>
                         </div>
                         <div class="title">${{p.name}}</div>
                         <div class="specs">${{specList.join(' • ')}}</div>
@@ -486,7 +552,7 @@ def main():
     with sync_playwright() as p:
         for country in valid_countries:
             config = STORES[country]
-            print(f"Processing store: {country} ({config['url']})")
+            print(f"Processing store: {country} ({config['base_url']})")
             items = fetch_store_data(p, country, config)
             print(f"Found {len(items)} items in {country}")
             all_items.extend(items)
