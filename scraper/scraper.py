@@ -87,6 +87,48 @@ STORES = {
         "currency_symbol": "€",
         "currency_label": "EUR",
         "rate_to_eur": 1.0,
+    },
+    "IT": {
+        "base_url": "https://www.apple.com/it/shop/refurbished",
+        "currency_symbol": "€",
+        "currency_label": "EUR",
+        "rate_to_eur": 1.0,
+    },
+    "BE": { # Belgium (French)
+        "base_url": "https://www.apple.com/be-fr/shop/refurbished",
+        "currency_symbol": "€",
+        "currency_label": "EUR",
+        "rate_to_eur": 1.0,
+    },
+    "FI": {
+        "base_url": "https://www.apple.com/fi/shop/refurbished",
+        "currency_symbol": "€",
+        "currency_label": "EUR",
+        "rate_to_eur": 1.0,
+    },
+    "HU": {
+        "base_url": "https://www.apple.com/hu/shop/refurbished",
+        "currency_symbol": "Ft",
+        "currency_label": "HUF",
+        "rate_to_eur": 0.0025, # Approx
+    },
+    "LU": {
+        "base_url": "https://www.apple.com/lu/shop/refurbished",
+        "currency_symbol": "€",
+        "currency_label": "EUR",
+        "rate_to_eur": 1.0,
+    },
+    "UK": {
+        "base_url": "https://www.apple.com/uk/shop/refurbished",
+        "currency_symbol": "£",
+        "currency_label": "GBP",
+        "rate_to_eur": 1.17, # Approx
+    },
+    "NO": {
+        "base_url": "https://www.apple.com/no/shop/refurbished",
+        "currency_symbol": "kr",
+        "currency_label": "NOK",
+        "rate_to_eur": 0.088, # Approx
     }
 }
 
