@@ -265,7 +265,7 @@ def parse_specs(text, category='mac'):
         specs['device_type'] = 'Apple Pencil'
     elif 'mouse' in text or 'souris' in text or 'maus' in text or 'ratón' in text:
         specs['device_type'] = 'Mouse'
-    elif 'trackpad' in text:
+    elif 'magic trackpad' in text:  # Only match standalone Magic Trackpad, not Macs with trackpads
         specs['device_type'] = 'Trackpad'
     elif 'keyboard' in text or 'clavier' in text or 'tastatur' in text or 'teclado' in text:
         specs['device_type'] = 'Keyboard'
