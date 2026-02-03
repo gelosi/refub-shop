@@ -219,7 +219,7 @@ def fetch_store_data(playwright, country_code, config):
     
                     # Recategorize accessories found in other sections (e.g. Pencil in iPad section)
                     final_category = category
-                    if specs['device_type'] in ['Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'HomePod', 'Accessory']:
+                    if specs['device_type'] in ['Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'HomePod', 'AirPods', 'Display', 'Accessory']:
                         final_category = 'accessories'
 
                     prod = {
@@ -258,25 +258,57 @@ def parse_specs(text, category='mac'):
         "screen": None,
         "device_type": "Device"
     }
+
+    # 1. Main Device Type Detection (Priority 1)
+    # Detect Macs first as they often contain accessory names in their specs
+    if 'macbook air' in text: specs['device_type'] = 'MacBook Air'
+    elif 'macbook pro' in text: specs['device_type'] = 'MacBook Pro'
+    elif 'mini' in text and (category == 'mac' or 'mac' in text): specs['device_type'] = 'Mac mini'
+    elif 'imac' in text: specs['device_type'] = 'iMac'
+    elif 'studio' in text and (category == 'mac' or 'mac' in text): specs['device_type'] = 'Mac Studio'
+    elif 'mac pro' in text: specs['device_type'] = 'Mac Pro'
+    elif 'ipad' in text:
+        specs['device_type'] = 'iPad'
+        if 'ipad pro' in text: specs['device_type'] = 'iPad Pro'
+        elif 'ipad air' in text: specs['device_type'] = 'iPad Air'
+        elif 'ipad mini' in text: specs['device_type'] = 'iPad mini'
+    elif 'iphone' in text:
+        specs['device_type'] = 'iPhone'
+        model_match = re.search(r'iphone\s+(\d+\s*(?:pro|max|plus|mini)?)', text)
+        if model_match: specs['device_type'] = f"iPhone {model_match.group(1).title()}"
+    elif 'watch' in text:
+        specs['device_type'] = 'Apple Watch'
+    elif 'apple tv' in text:
+        specs['device_type'] = 'Apple TV'
+
+    # 2. Accessory Detection (Priority 2 - Only if not already identified as a main device)
+    # Or specifically for Pencil which can be in iPad section names
+    if specs['device_type'] == 'Device':
+        if 'pencil' in text: specs['device_type'] = 'Apple Pencil'
+        elif 'magic mouse' in text: specs['device_type'] = 'Mouse'
+        elif 'magic trackpad' in text: specs['device_type'] = 'Trackpad'
+        elif 'magic keyboard' in text: specs['device_type'] = 'Keyboard'
+        elif 'homepod' in text: specs['device_type'] = 'HomePod'
+        elif 'airpods' in text: specs['device_type'] = 'AirPods'
+        elif 'studio display' in text or 'pro display' in text: specs['device_type'] = 'Display'
     
-    # Global Accessory Detection (Prioritized)
-    # Detect Pencils, Keyboards, etc. regardless of category context
-    if 'pencil' in text: # "Apple Pencil" usually
+    # Special case: Apple Pencil overrides because it's often in title "Pencil for iPad"
+    if 'pencil' in text:
         specs['device_type'] = 'Apple Pencil'
-    elif 'mouse' in text or 'souris' in text or 'maus' in text or 'ratón' in text:
-        specs['device_type'] = 'Mouse'
-    elif 'magic trackpad' in text:  # Only match standalone Magic Trackpad, not Macs with trackpads
-        specs['device_type'] = 'Trackpad'
-    elif 'keyboard' in text or 'clavier' in text or 'tastatur' in text or 'teclado' in text:
-        specs['device_type'] = 'Keyboard'
-    elif 'homepod' in text:
-        specs['device_type'] = 'HomePod'
-    
-    # If identified as accessory, we can skip other checks or be careful not to overwrite
-    is_accessory = specs['device_type'] in ['Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'HomePod']
+
+    # 3. Final Category Fallbacks
+    if specs['device_type'] == 'Device':
+        if category == 'mac': specs['device_type'] = 'Mac'
+        elif category == 'ipad': specs['device_type'] = 'iPad'
+        elif category == 'iphone': specs['device_type'] = 'iPhone'
+        elif category == 'watch': specs['device_type'] = 'Apple Watch'
+        elif category == 'appletv': specs['device_type'] = 'Apple TV'
+        elif category == 'accessories': specs['device_type'] = 'Accessory'
+
+    is_accessory = specs['device_type'] in ['Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'HomePod', 'AirPods', 'Display', 'Accessory']
 
     # RAM (Mostly for Mac)
-    if not is_accessory and category == 'mac':
+    if not is_accessory and (category == 'mac' or specs['device_type'] in ['Mac', 'MacBook Air', 'MacBook Pro', 'Mac mini', 'iMac', 'Mac Studio', 'Mac Pro']):
         ram_patterns = [
             r'(\d+)\s*(?:gb|go)\s*(?:de\s+)?(?:unified memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|zunifikowanej\s*pamięci|pamięć\s*ram|centraal\s*geheugen|geheugen|memoria\s*unificada|memoria\s*unificata)',
             r'(\d+)\s*(?:gb|go)\s*(?:ram|memory|arbeitsspeicher|mémoire|pamięć|geheugen|memoria)',
@@ -288,17 +320,12 @@ def parse_specs(text, category='mac'):
              if ram_match:
                  specs['ram'] = int(ram_match.group(1))
                  break
-        
-        if specs['ram'] is None:
-            pass
 
     # SSD
     if not is_accessory:
         ssd_match = re.search(r'ssd\s+(\d+)\s*(?:gb|go|tb|to)', text)
-    
         if not ssd_match:
             ssd_match = re.search(r'(?:ssd|opslag|stockage)\s*(?:van|de|von|z)\s*(\d+)\s*(?:gb|go|tb|to)', text)
-            
         if not ssd_match:
             # Fallback
             ssd_match = re.search(r'(\d+)\s*(?:gb|go|tb|to)\s*(?:ssd|stockage|opslag|almacenamiento|lagring|úložiště|pamięci masowej)', text)
@@ -317,7 +344,6 @@ def parse_specs(text, category='mac'):
                  val = int(simple_gb.group(1))
                  if 'tb' in simple_gb.group(0) or 'to' in simple_gb.group(0): val *= 1024
                  specs['ssd'] = val
-
 
     # Chip
     # M-series
@@ -338,45 +364,15 @@ def parse_specs(text, category='mac'):
     screen_match = re.search(r'(\d+[,.]\d+)["”]', text)
     if screen_match:
         specs['screen'] = float(screen_match.group(1).replace(',', '.'))
-    elif category == 'watch':
+    elif category == 'watch' or specs['device_type'] == 'Apple Watch':
         # Watch Case Size (mm)
         mm_match = re.search(r'(\d+)\s*mm', text)
         if mm_match:
              specs['screen'] = int(mm_match.group(1)) # Treat 'screen' field as size for watch
-    
-    # Device Type refine
-    if specs['device_type'] == 'Device': # Only if not already identified as accessory
-        if category == 'mac':
-            specs['device_type'] = 'Mac'
-            if 'macbook air' in text: specs['device_type'] = 'MacBook Air'
-            elif 'macbook pro' in text: specs['device_type'] = 'MacBook Pro'
-            elif 'mini' in text: specs['device_type'] = 'Mac mini'
-            elif 'imac' in text: specs['device_type'] = 'iMac'
-            elif 'studio' in text: specs['device_type'] = 'Mac Studio'
-            elif 'pro' in text and 'mac' in text: specs['device_type'] = 'Mac Pro'
-        elif category == 'ipad':
-            specs['device_type'] = 'iPad'
-            if 'ipad pro' in text: specs['device_type'] = 'iPad Pro'
-            elif 'ipad air' in text: specs['device_type'] = 'iPad Air'
-            elif 'ipad mini' in text: specs['device_type'] = 'iPad mini'
-        elif category == 'iphone':
-            specs['device_type'] = 'iPhone'
-            model_match = re.search(r'iphone\s+(\d+\s*(?:pro|max|plus|mini)?)', text)
-            if model_match:
-                specs['device_type'] = f"iPhone {model_match.group(1).title()}"
-        elif category == 'watch':
-            specs['device_type'] = 'Apple Watch'
-            if 'ultra' in text: specs['device_type'] = 'Apple Watch Ultra'
-            elif 'se' in text: specs['device_type'] = 'Apple Watch SE'
-            else:
-                series = re.search(r'series\s+(\d+)', text)
-                if series: specs['device_type'] = f"Apple Watch Series {series.group(1)}"
-        elif category == 'appletv':
-            specs['device_type'] = 'Apple TV'
-            if '4k' in text: specs['device_type'] = 'Apple TV 4K'
-            if 'hd' in text: specs['device_type'] = 'Apple TV HD'
-        elif category == 'accessories':
-            specs['device_type'] = 'Accessory'
+    elif specs['device_type'] == 'Display':
+        # Studio Display is 27", Pro Display XDR is 32"
+        if '27' in text: specs['screen'] = 27
+        elif '32' in text: specs['screen'] = 32
 
     return specs, text 
 
