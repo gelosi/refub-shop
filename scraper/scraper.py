@@ -222,13 +222,17 @@ def fetch_store_data(playwright, country_code, config):
                     if specs['device_type'] in ['Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'HomePod', 'AirPods', 'Display', 'Accessory']:
                         final_category = 'accessories'
 
+                    # Calculate EUR price
+                    price_eur = round(price * config['rate_to_eur'], 2)
+                    
                     prod = {
                         "country": country_code,
                         "category": final_category,
                         "name": name,
-                        "price": price,
-                        "currency": config['currency_label'],
-                        "price_eur": round(price * config['rate_to_eur'], 2),
+                        "price": price_eur, # Main price is now always EUR
+                        "currency": "EUR",
+                        "original_price": price if config['currency_label'] != 'EUR' else None,
+                        "original_currency": config['currency_label'],
                         "image": image,
                         "url": item_url,
                         "specs": specs
@@ -479,9 +483,9 @@ def generate_html(all_products):
             }});
 
             if (sort === 'price_asc') {{
-                filtered.sort((a, b) => a.price_eur - b.price_eur);
+                filtered.sort((a, b) => a.price - b.price);
             }} else {{
-                filtered.sort((a, b) => b.price_eur - a.price_eur);
+                filtered.sort((a, b) => b.price - a.price);
             }}
 
             filtered.forEach(p => {{
@@ -495,7 +499,7 @@ def generate_html(all_products):
                 if (p.specs.ram) specList.push(p.specs.ram + ' GB RAM');
                 if (p.specs.ssd) specList.push(formatSSD(p.specs.ssd) + ' SSD');
                 
-                const showEur = p.currency !== 'EUR';
+                const showOriginal = p.original_price != null;
                 
                 card.innerHTML = `
                     <div class="image-container">
@@ -509,8 +513,8 @@ def generate_html(all_products):
                         <div class="title">${{p.name}}</div>
                         <div class="specs">${{specList.join(' • ')}}</div>
                         <div class="price-row">
-                            <div class="price">${{p.price}} ${{p.currency}}</div>
-                            ${{showEur ? `<div class="price-eur">~${{p.price_eur}} €</div>` : ''}}
+                            <div class="price">€${{p.price.toFixed(2)}}</div>
+                            ${{showOriginal ? `<div class="price-eur">${{p.original_price.toFixed(2)}} ${{p.original_currency}}</div>` : ''}}
                         </div>
                     </div>
                 `;
