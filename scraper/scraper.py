@@ -314,7 +314,7 @@ def parse_specs(text, category='mac'):
     # RAM (Mostly for Mac)
     if not is_accessory and (category == 'mac' or specs['device_type'] in ['Mac', 'MacBook Air', 'MacBook Pro', 'Mac mini', 'iMac', 'Mac Studio', 'Mac Pro']):
         ram_patterns = [
-            r'(\d+)\s*(?:gb|go)\s*(?:de\s+)?(?:unified memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|zunifikowanej\s*pamięci|pamięć\s*ram|centraal\s*geheugen|geheugen|memoria\s*unificada|memoria\s*unificata)',
+            r'(\d+)\s*(?:gb|go)\s*(?:(?:de|di)\s+)?(?:unified memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|zunifikowanej\s*pamięci|pamięć\s*ram|centraal\s*geheugen|geheugen|memoria\s*unificada|memoria\s*unificata)',
             r'(\d+)\s*(?:gb|go)\s*(?:ram|memory|arbeitsspeicher|mémoire|pamięć|geheugen|memoria)',
             r'(\d+)\s*(?:gb|go)', # Fallback
         ]
@@ -329,7 +329,7 @@ def parse_specs(text, category='mac'):
     if not is_accessory:
         ssd_match = re.search(r'ssd\s+(\d+)\s*(?:gb|go|tb|to)', text)
         if not ssd_match:
-            ssd_match = re.search(r'(?:ssd|opslag|stockage)\s*(?:van|de|von|z)\s*(\d+)\s*(?:gb|go|tb|to)', text)
+            ssd_match = re.search(r'(?:ssd|opslag|stockage)\s*(?:van|de|von|z|da)\s*(\d+)\s*(?:gb|go|tb|to)', text)
         if not ssd_match:
             # Fallback
             ssd_match = re.search(r'(\d+)\s*(?:gb|go|tb|to)\s*(?:ssd|stockage|opslag|almacenamiento|lagring|úložiště|pamięci masowej)', text)
