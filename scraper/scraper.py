@@ -415,11 +415,16 @@ def generate_html(all_products):
         .price-row {{ display: flex; justify-content: space-between; align-items: flex-end; margin-top: 10px; }}
         .price {{ font-size: 18px; font-weight: 700; color: #1d1d1f; }}
         .price-eur {{ font-size: 13px; color: #86868b; }}
-        .country-tag {{ display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 10px; font-weight: bold; background: #e8e8ed; color: #1d1d1f; margin-bottom: 8px; }}
+        .attribution {{ position: absolute; top: 20px; right: 20px; font-size: 12px; color: #86868b; }}
+        .attribution a {{ color: #0066cc; text-decoration: none; font-weight: 600; }}
+        .attribution a:hover {{ text-decoration: underline; }}
         a {{ text-decoration: none; color: inherit; }}
     </style>
 </head>
 <body>
+    <div class="attribution">
+        made by <a href="https://gelosi.github.io" target="_blank">gelosi</a>
+    </div>
     <div class="header">
         <h1>Apple Refurbished Tracker</h1>
         <p>Tracking {len(all_products)} items across {len(countries)} countries</p>
