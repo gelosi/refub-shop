@@ -278,8 +278,10 @@ def parse_specs(text, category='mac'):
         elif 'ipad mini' in text: specs['device_type'] = 'iPad mini'
     elif 'iphone' in text:
         specs['device_type'] = 'iPhone'
-        model_match = re.search(r'iphone\s+(\d+\s*(?:pro|max|plus|mini)?)', text)
-        if model_match: specs['device_type'] = f"iPhone {model_match.group(1).title()}"
+        model_match = re.search(r'iphone\s+(\d+(?:\s*(?:pro\s*max|pro|max|plus|mini))?)', text)
+        if model_match:
+            device_model = re.sub(r'\s+', ' ', model_match.group(1).strip().title())
+            specs['device_type'] = f"iPhone {device_model}"
     elif 'watch' in text:
         specs['device_type'] = 'Apple Watch'
     elif 'apple tv' in text:
@@ -463,6 +465,24 @@ def generate_html(all_products):
     <script>
         const products = {json_data};
 
+        // Explicit Lazy Loading to avoid rate limits
+        const lazyObserver = new IntersectionObserver((entries, observer) => {{
+            entries.forEach(entry => {{
+                if (entry.isIntersecting) {{
+                    const img = entry.target;
+                    // Throttle loading to only when user stops scrolling past
+                    setTimeout(() => {{
+                        const rect = img.getBoundingClientRect();
+                        if (rect.top < window.innerHeight + 100 && rect.bottom > -100) {{
+                            img.src = img.getAttribute('data-src');
+                            img.classList.remove('lazy-image');
+                            observer.unobserve(img);
+                        }}
+                    }}, 150);
+                }}
+            }});
+        }}, {{ rootMargin: "200px 0px" }});
+
         function formatSSD(gb) {{
             if (!gb) return '';
             return gb >= 1024 ? (gb/1024) + ' TB' : gb + ' GB';
@@ -508,7 +528,7 @@ def generate_html(all_products):
                 
                 card.innerHTML = `
                     <div class="image-container">
-                        <img src="${{p.image}}" alt="${{p.name}}" loading="lazy">
+                        <img class="lazy-image" data-src="${{p.image}}" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3C/svg%3E" alt="${{p.name}}">
                     </div>
                     <div class="content">
                         <div>
@@ -525,6 +545,8 @@ def generate_html(all_products):
                 `;
                 container.appendChild(card);
             }});
+
+            document.querySelectorAll('.lazy-image').forEach(img => lazyObserver.observe(img));
         }}
         
         // Initial render
