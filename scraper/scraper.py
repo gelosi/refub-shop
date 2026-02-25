@@ -267,9 +267,9 @@ def parse_specs(text, category='mac'):
     # Detect Macs first as they often contain accessory names in their specs
     if 'macbook air' in text: specs['device_type'] = 'MacBook Air'
     elif 'macbook pro' in text: specs['device_type'] = 'MacBook Pro'
-    elif 'mini' in text and (category == 'mac' or 'mac' in text): specs['device_type'] = 'Mac mini'
+    elif 'mac mini' in text: specs['device_type'] = 'Mac mini'
     elif 'imac' in text: specs['device_type'] = 'iMac'
-    elif 'studio' in text and (category == 'mac' or 'mac' in text): specs['device_type'] = 'Mac Studio'
+    elif 'mac studio' in text: specs['device_type'] = 'Mac Studio'
     elif 'mac pro' in text: specs['device_type'] = 'Mac Pro'
     elif 'ipad' in text:
         specs['device_type'] = 'iPad'
