@@ -171,55 +171,6 @@ def fetch_store_data(country_code, config):
                     raw_text = tile.get_text(" ", strip=True)
                     specs, _ = parse_specs(raw_text, category)
                     
-                    # Fallback visit logic
-                    # Only check RAM missing for Macs.
-                    # Check SSD for Mac, iPad, iPhone, AppleTV (AppleTV has capacity).
-                    # Watch and Accessories might not clearly state capacity in title or use different format, so skip forced check.
-        
-                    check_ram = (category == 'mac') 
-                    check_ssd = (category in ['mac', 'ipad', 'iphone', 'appletv'])
-                    
-                    # Strictness check
-                    missing_important = False
-                    if check_ram and specs['ram'] is None: missing_important = True
-                    if check_ssd and specs['ssd'] is None: missing_important = True
-                    
-                    if missing_important and specs['device_type'] not in ['Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'Accessory']:
-                         try:
-                             page_prod = browser.new_page()
-                             page_prod.goto(item_url, timeout=30000)
-                             prod_content = page_prod.content()
-                             
-                             soup_prod = BeautifulSoup(prod_content, 'html.parser')
-                             selectors = [
-                                 '.rc-pdsection-panel.Overview-panel', 
-                                 '.rc-pdsection-panel.TechSpecs-panel', 
-                                 '.rf-tech-specs-section',
-                                 '.rf-pdp-title'
-                             ]
-                             
-                             full_page_text = ""
-                             for sel in selectors:
-                                 elements = soup_prod.select(sel)
-                                 for el in elements:
-                                     full_page_text += " " + el.get_text(" ", strip=True)
-                             
-                             if not full_page_text.strip():
-                                 full_page_text = soup_prod.get_text(" ", strip=True)
-    
-                             specs_new, _ = parse_specs(full_page_text, category)
-                             
-                             if specs['ram'] is None: specs['ram'] = specs_new['ram']
-                             if specs['ssd'] is None: specs['ssd'] = specs_new['ssd']
-                             if specs['chip'] is None: specs['chip'] = specs_new['chip']
-                             if specs['screen'] is None: specs['screen'] = specs_new['screen']
-                             if specs_new['device_type'] != 'Device': specs['device_type'] = specs_new['device_type']
-                             
-                             page_prod.close()
-                         except Exception as e:
-                             err_msg = f"Failed to visit item page '{name[:30]}...': {e}"
-                             print(f"    {err_msg}")
-                             country_errors.append(err_msg)
     
                     # Recategorize accessories found in other sections (e.g. Pencil in iPad section)
                     final_category = category
