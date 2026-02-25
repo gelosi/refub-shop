@@ -6,6 +6,7 @@ import os
 from datetime import datetime
 import time
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import urllib.request
 
 def fetch_exchange_rates():
@@ -94,8 +95,9 @@ CATEGORIES = ['mac', 'ipad', 'iphone', 'watch', 'appletv', 'accessories']
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36"
 OUTPUT_FILE = "index.html"
 
-def fetch_store_data(playwright, country_code, config):
+def fetch_store_data(country_code, config):
     print(f"Fetching data for {country_code}...")
+    playwright = sync_playwright().start()
     browser = playwright.chromium.launch(headless=True)
     
     all_category_items = []
@@ -249,6 +251,7 @@ def fetch_store_data(playwright, country_code, config):
         all_category_items.extend(items)
 
     browser.close()
+    playwright.stop()
     return all_category_items
 
 def parse_specs(text, category='mac'):
@@ -590,16 +593,25 @@ def main():
                 print(f"  {country} ({currency}): {config['rate_to_eur']} -> {new_rate:.4f}")
                 config['rate_to_eur'] = new_rate
     
-    with sync_playwright() as p:
+    jobs = {}
+    with ProcessPoolExecutor(max_workers=len(valid_countries)) as executor:
         for country in valid_countries:
             config = STORES[country]
             if 'base_url' not in config:
                 print(f"Skipping {country}: Missing base_url")
                 continue
-            print(f"Processing store: {country} ({config['base_url']})")
-            items = fetch_store_data(p, country, config)
-            print(f"Found {len(items)} items in {country}")
-            all_items.extend(items)
+            print(f"Queuing store: {country} ({config['base_url']})")
+            future = executor.submit(fetch_store_data, country, config)
+            jobs[future] = country
+
+        for future in as_completed(jobs):
+            country = jobs[future]
+            try:
+                items = future.result()
+                print(f"Found {len(items)} items in {country}")
+                all_items.extend(items)
+            except Exception as e:
+                print(f"Failed to fetch {country}: {e}")
     
     generate_html(all_items)
 
