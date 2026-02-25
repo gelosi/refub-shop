@@ -612,8 +612,50 @@ def main():
                 all_items.extend(items)
             except Exception as e:
                 print(f"Failed to fetch {country}: {e}")
-    
     generate_html(all_items)
+    
+    # --- Statistics Output ---
+    print("\n" + "="*40)
+    print("SCRAPING STATISTICS")
+    print("="*40)
+    print(f"Total Products Found: {len(all_items)}")
+    
+    if not all_items:
+        print("WARNING: No products were scraped at all. Check connection or selectors.")
+        return
+        
+    stats = {}
+    for item in all_items:
+        c = item['country']
+        cat = item['category']
+        if c not in stats:
+            stats[c] = {category: 0 for category in CATEGORIES}
+            stats[c]['_total'] = 0
+        
+        # In case a custom category slipped in
+        if cat not in stats[c]:
+            stats[c][cat] = 0
+            
+        stats[c][cat] += 1
+        stats[c]['_total'] += 1
+
+    for country in valid_countries:
+        if country not in stats:
+            print(f"\n[{country}] - 0 items (FAILED OR EMPTY)")
+            continue
+            
+        c_stats = stats[country]
+        print(f"\n[{country}] Total: {c_stats['_total']}")
+        
+        for cat in CATEGORIES:
+            count = c_stats.get(cat, 0)
+            if count == 0:
+                # Flag missing categories, which might indicate a changed page structure or real lack of stock
+                print(f"  - {cat.ljust(12)}: {count}  <-- EMPTY")
+            else:
+                print(f"  - {cat.ljust(12)}: {count}")
+                
+    print("="*40 + "\n")
 
 if __name__ == "__main__":
     main()
