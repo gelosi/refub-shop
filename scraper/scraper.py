@@ -101,6 +101,7 @@ def fetch_store_data(country_code, config):
     browser = playwright.chromium.launch(headless=True)
     
     all_category_items = []
+    country_errors = []
     
     for category in CATEGORIES:
         url = f"{config['base_url']}/{category}"
@@ -184,7 +185,6 @@ def fetch_store_data(country_code, config):
                     if check_ssd and specs['ssd'] is None: missing_important = True
                     
                     if missing_important and specs['device_type'] not in ['Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'Accessory']:
-                         print(f"    Missing specs ({category}) for '{name[:30]}...' -> visiting page...")
                          try:
                              page_prod = browser.new_page()
                              page_prod.goto(item_url, timeout=30000)
@@ -217,7 +217,9 @@ def fetch_store_data(country_code, config):
                              
                              page_prod.close()
                          except Exception as e:
-                             print(f"    Failed to visit page: {e}")
+                             err_msg = f"Failed to visit item page '{name[:30]}...': {e}"
+                             print(f"    {err_msg}")
+                             country_errors.append(err_msg)
     
                     # Recategorize accessories found in other sections (e.g. Pencil in iPad section)
                     final_category = category
@@ -242,17 +244,21 @@ def fetch_store_data(country_code, config):
                     items.append(prod)
                     
                 except Exception as e:
+                     err_msg = f"Item processing error: {e}"
+                     country_errors.append(err_msg)
                      continue
                      
         except Exception as e:
-            print(f"Error processing {country_code} {category}: {e}")
+            err_msg = f"Error processing {country_code} {category}: {e}"
+            print(err_msg)
+            country_errors.append(err_msg)
             
         page.close()
         all_category_items.extend(items)
 
     browser.close()
     playwright.stop()
-    return all_category_items
+    return all_category_items, country_errors
 
 def parse_specs(text, category='mac'):
     # Normalize unicode spaces (NBSP)
@@ -594,6 +600,7 @@ def main():
                 config['rate_to_eur'] = new_rate
     
     jobs = {}
+    master_errors = []
     with ProcessPoolExecutor(max_workers=len(valid_countries)) as executor:
         for country in valid_countries:
             config = STORES[country]
@@ -607,11 +614,14 @@ def main():
         for future in as_completed(jobs):
             country = jobs[future]
             try:
-                items = future.result()
+                items, c_errors = future.result()
                 print(f"Found {len(items)} items in {country}")
                 all_items.extend(items)
+                master_errors.extend(c_errors)
             except Exception as e:
                 print(f"Failed to fetch {country}: {e}")
+                master_errors.append(f"CRITICAL: Failed to fetch {country}: {e}")
+                
     generate_html(all_items)
     
     # --- Statistics Output ---
@@ -655,7 +665,14 @@ def main():
             else:
                 print(f"  - {cat.ljust(12)}: {count}")
                 
-    print("="*40 + "\n")
+    if master_errors:
+        print("\n" + "="*40)
+        print("ERRORS ENCOUNTERED")
+        print("="*40)
+        for err in master_errors:
+            print(f" - {err}")
+            
+    print("\n" + "="*40 + "\n")
 
 if __name__ == "__main__":
     main()
