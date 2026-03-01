@@ -385,7 +385,8 @@ def generate_html(all_products):
 </head>
 <body>
     <div class="attribution">
-        made by <a href="https://gelosi.github.io" target="_blank">gelosi</a>
+        made by <a href="https://gelosi.github.io" target="_blank">gelosi</a><br>
+        get notifications via <a href="https://refurb-tracker.com" target="_blank">refurb-tracker</a>
     </div>
     <div class="header">
         <h1>Apple Refurbished Tracker</h1>
