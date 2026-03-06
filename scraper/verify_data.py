@@ -15,34 +15,42 @@ def verify():
         products = json.loads(match.group(1))
         
         total = len(products)
-        missing_ram = sum(1 for p in products if p['specs']['ram'] is None)
-        missing_ssd = sum(1 for p in products if p['specs']['ssd'] is None)
-        
-        print(f"Total Products: {total}")
-        print(f"Missing RAM: {missing_ram} ({missing_ram/total*100:.1f}%)")
-        print(f"Missing SSD: {missing_ssd} ({missing_ssd/total*100:.1f}%)")
-        
-        # Print a few examples
-        total_items = 0 # Re-initialize for this section if needed, or use 'total'
-        missing_ram = 0 # Re-initialize for this section
-        missing_ssd = 0 # Re-initialize for this section
+        ram_applicable_categories = {'mac'}
+        ssd_applicable_categories = {'mac', 'ipad', 'iphone', 'appletv'}
 
-        for p in products: # Assuming 'products' is the intended list to iterate over
-            total_items += 1
-            
-            # Check RAM
+        ram_applicable = [p for p in products if p['category'] in ram_applicable_categories]
+        ssd_applicable = [p for p in products if p['category'] in ssd_applicable_categories]
+
+        missing_ram = sum(1 for p in ram_applicable if p['specs']['ram'] is None)
+        missing_ssd = sum(1 for p in ssd_applicable if p['specs']['ssd'] is None)
+
+        print(f"Total Products: {total}")
+        if ram_applicable:
+            print(f"Missing RAM (mac only): {missing_ram} ({missing_ram/len(ram_applicable)*100:.1f}%)")
+        else:
+            print("Missing RAM (mac only): 0")
+        if ssd_applicable:
+            print(f"Missing SSD (mac/ipad/iphone/appletv): {missing_ssd} ({missing_ssd/len(ssd_applicable)*100:.1f}%)")
+        else:
+            print("Missing SSD (mac/ipad/iphone/appletv): 0")
+
+        print("\nSample Missing RAM (max 25):")
+        shown = 0
+        for p in ram_applicable:
             if p['specs']['ram'] is None:
-                missing_ram += 1
-                print(f"Missing RAM: {p['name']} ({p['country']})")
-            
-            # Check SSD
+                print(f"- {p['name']} ({p['country']})")
+                shown += 1
+                if shown >= 25:
+                    break
+
+        print("\nSample Missing SSD (max 25):")
+        shown = 0
+        for p in ssd_applicable:
             if p['specs']['ssd'] is None:
-                missing_ssd += 1
-                print(f"Missing SSD: {p['name']} ({p['country']})") # Added print for SSD as well
-                # We can't access original description from index.html easily as it wasn't saved in the json.
-                # Wait, I didn't save the description in the products list in scraper.py?
-                # Let's check scraper.py.
-                # break # Removed break as it would stop after the first missing SSD
+                print(f"- {p['name']} ({p['country']})")
+                shown += 1
+                if shown >= 25:
+                    break
         
     except Exception as e:
         print(f"Verification failed: {e}")

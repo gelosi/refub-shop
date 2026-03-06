@@ -8,6 +8,8 @@ import time
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import urllib.request
+from html import unescape, escape
+from urllib.parse import urljoin
 
 def fetch_exchange_rates():
     try:
@@ -95,6 +97,139 @@ CATEGORIES = ['mac', 'ipad', 'iphone', 'watch', 'appletv', 'accessories']
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36"
 OUTPUT_FILE = "index.html"
 
+ACCESSORY_TYPES = {'Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'HomePod', 'AirPods', 'Display', 'Accessory'}
+MAC_DEVICE_TYPES = {'Mac', 'MacBook Air', 'MacBook Pro', 'Mac mini', 'iMac', 'Mac Studio', 'Mac Pro'}
+MACBOOK_TYPES = {'MacBook Air', 'MacBook Pro'}
+
+
+def normalize_text(text):
+    text = unescape(text or "")
+    text = text.replace('\u00a0', ' ').replace('\u2009', ' ').replace('\u202f', ' ')
+    text = re.sub(r'[\u2010-\u2015\u2212]', '-', text)  # normalize dash variants
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def merge_specs(base, updates):
+    merged = dict(base)
+    for key in ['ram', 'ssd', 'chip', 'screen']:
+        if merged.get(key) is None and updates.get(key) is not None:
+            merged[key] = updates[key]
+    # Only replace generic type names
+    if merged.get('device_type') in [None, 'Device', 'Mac', 'iPad', 'iPhone', 'Apple Watch', 'Apple TV', 'Accessory']:
+        if updates.get('device_type') and updates['device_type'] != 'Device':
+            merged['device_type'] = updates['device_type']
+    return merged
+
+
+def extract_detail_text(product_url):
+    req = urllib.request.Request(product_url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        html = response.read().decode('utf-8', errors='ignore')
+
+    # Product pages include rich specs in the meta description, often language-localized.
+    desc_match = re.search(
+        r'<meta\s+name=["\']description["\']\s+content=["\'](.*?)["\']\s*/?>',
+        html,
+        re.IGNORECASE | re.DOTALL,
+    )
+    title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+    parts = []
+    if title_match:
+        parts.append(title_match.group(1))
+    if desc_match:
+        parts.append(desc_match.group(1).replace('|', ' '))
+    return normalize_text(" ".join(parts))
+
+
+def needs_detail_enrichment(product):
+    specs = product.get('specs', {})
+    category = product.get('category')
+    device_type = specs.get('device_type')
+
+    if category == 'mac':
+        return specs.get('ram') is None or specs.get('ssd') is None or specs.get('screen') is None
+
+    if category in ['ipad', 'iphone', 'appletv'] and specs.get('ssd') is None:
+        return True
+
+    # Accessories and watches should not force RAM/SSD enrichment.
+    if category in ['watch', 'accessories'] or device_type in ACCESSORY_TYPES:
+        return False
+    return False
+
+
+def enrich_products_with_detail_specs(products, country_code):
+    cache = {}
+    enriched = 0
+    errors = []
+
+    for product in products:
+        if not needs_detail_enrichment(product):
+            continue
+
+        url = product.get('url')
+        if not url:
+            continue
+
+        try:
+            if url not in cache:
+                cache[url] = extract_detail_text(url)
+                time.sleep(0.12)  # small throttle to reduce bursty requests
+
+            detail_text = cache[url]
+            if detail_text:
+                detail_specs, _ = parse_specs(detail_text, product.get('category', 'mac'))
+                merged_specs = merge_specs(product['specs'], detail_specs)
+                if merged_specs != product['specs']:
+                    product['specs'] = merged_specs
+                    enriched += 1
+        except Exception as e:
+            errors.append(f"Detail enrichment failed ({country_code}): {url} -> {e}")
+
+    print(f"  Detail enrichment ({country_code}): updated {enriched} products")
+    return errors
+
+
+def format_screen_value(screen):
+    if screen is None:
+        return None
+    if isinstance(screen, int) or float(screen).is_integer():
+        return str(int(screen))
+    return f"{screen:.1f}".rstrip('0').rstrip('.')
+
+
+def html_option(value, label=None):
+    if label is None:
+        label = value
+    safe_value = escape(str(value), quote=True)
+    safe_label = escape(str(label), quote=False)
+    return f'<option value="{safe_value}">{safe_label}</option>'
+
+
+def bucket_screen_inches(screen):
+    if screen is None:
+        return None
+    value = float(screen)
+    # Keep all common "13-inch class" screens in one bucket (13.0 / 13.3 / 13.6).
+    if 12.7 <= value < 14.0:
+        return 13
+    if value < 20:
+        return int(value)
+    return None
+
+
+def device_filter_label(product):
+    specs = product.get('specs', {})
+    device_type = specs.get('device_type', 'Device')
+    screen = specs.get('screen')
+
+    inch_bucket = bucket_screen_inches(screen)
+    if inch_bucket is not None and device_type not in ['Apple Watch', 'Display']:
+        return f"{device_type} {inch_bucket}\""
+    return device_type
+
+
 def fetch_store_data(country_code, config):
     print(f"Fetching data for {country_code}...")
     playwright = sync_playwright().start()
@@ -134,8 +269,8 @@ def fetch_store_data(country_code, config):
                     if not title_elem:
                         continue
                         
-                    name = title_elem.get_text(strip=True)
-                    item_url = "https://www.apple.com" + title_elem['href']
+                    name = normalize_text(title_elem.get_text(strip=True))
+                    item_url = urljoin(config['base_url'], title_elem['href'])
                     
                     # Image
                     img_elem = tile.select_one('img')
@@ -168,7 +303,7 @@ def fetch_store_data(country_code, config):
                             price = 0
     
                     # Specs
-                    raw_text = tile.get_text(" ", strip=True)
+                    raw_text = normalize_text(f"{name} {tile.get_text(' ', strip=True)}")
                     specs, _ = parse_specs(raw_text, category)
                     
     
@@ -207,13 +342,13 @@ def fetch_store_data(country_code, config):
         page.close()
         all_category_items.extend(items)
 
+    country_errors.extend(enrich_products_with_detail_specs(all_category_items, country_code))
     browser.close()
     playwright.stop()
     return all_category_items, country_errors
 
 def parse_specs(text, category='mac'):
-    # Normalize unicode spaces (NBSP)
-    text = text.replace('\u00a0', ' ').replace('\u2009', ' ').replace('\u202f', ' ')
+    text = normalize_text(text)
     text = text.lower()
     specs = {
         "ram": None,
@@ -271,30 +406,26 @@ def parse_specs(text, category='mac'):
         elif category == 'appletv': specs['device_type'] = 'Apple TV'
         elif category == 'accessories': specs['device_type'] = 'Accessory'
 
-    is_accessory = specs['device_type'] in ['Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'HomePod', 'AirPods', 'Display', 'Accessory']
+    is_accessory = specs['device_type'] in ACCESSORY_TYPES
 
     # RAM (Mostly for Mac)
-    if not is_accessory and (category == 'mac' or specs['device_type'] in ['Mac', 'MacBook Air', 'MacBook Pro', 'Mac mini', 'iMac', 'Mac Studio', 'Mac Pro']):
+    if not is_accessory and (category == 'mac' or specs['device_type'] in MAC_DEVICE_TYPES):
         ram_patterns = [
-            r'(\d+)\s*(?:gb|go)\s*(?:(?:de|di)\s+)?(?:unified memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|zunifikowanej\s*pamięci|pamięć\s*ram|centraal\s*geheugen|geheugen|memoria\s*unificada|memoria\s*unificata)',
-            r'(\d+)\s*(?:gb|go)\s*(?:ram|memory|arbeitsspeicher|mémoire|pamięć|geheugen|memoria)',
-            r'(\d+)\s*(?:gb|go)', # Fallback
+            r'(\d+)\s*(?:gb|go)\s*(?:(?:de|di|del|della|z)\s+)?(?:unified\s*memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|mémoire|zunifikowanej\s*pamięci|pamięci\s*ram|pamięć\s*ram|centraal\s*geheugen|geheugen|memoria\s*unificada|memoria\s*unificata|ram|memory|arbeitsspeicher)',
+            r'(?:(?:ram|memory|arbeitsspeicher|mémoire|pamięć|pamięci|geheugen|memoria)\s*)[:\-]?\s*(\d+)\s*(?:gb|go)',
         ]
-        
-        for pattern in ram_patterns[:2]:
-             ram_match = re.search(pattern, text)
-             if ram_match:
-                 specs['ram'] = int(ram_match.group(1))
-                 break
+
+        for pattern in ram_patterns:
+            ram_match = re.search(pattern, text)
+            if ram_match:
+                specs['ram'] = int(ram_match.group(1))
+                break
 
     # SSD
     if not is_accessory:
-        ssd_match = re.search(r'ssd\s+(\d+)\s*(?:gb|go|tb|to)', text)
+        ssd_match = re.search(r'(?:ssd|flash storage|stockage|opslag|almacenamiento|speicher)\s*(?:von|de|del|di|z|da)?\s*(\d+)\s*(?:gb|go|tb|to)', text)
         if not ssd_match:
-            ssd_match = re.search(r'(?:ssd|opslag|stockage)\s*(?:van|de|von|z|da)\s*(\d+)\s*(?:gb|go|tb|to)', text)
-        if not ssd_match:
-            # Fallback
-            ssd_match = re.search(r'(\d+)\s*(?:gb|go|tb|to)\s*(?:ssd|stockage|opslag|almacenamiento|lagring|úložiště|pamięci masowej)', text)
+            ssd_match = re.search(r'(\d+)\s*(?:gb|go|tb|to)\s*(?:ssd|flash storage|stockage|opslag|almacenamiento|lagring|úložiště|pamięci\s*masowej|speicher)', text)
             
         if ssd_match:
             val = int(ssd_match.group(1))
@@ -305,11 +436,12 @@ def parse_specs(text, category='mac'):
         
         # Allow simple GB search for iPad/iPhone/AppleTV if no "SSD" keyword found
         if specs['ssd'] is None and category in ['ipad', 'iphone', 'appletv']:
-             simple_gb = re.search(r'(\d+)\s*(?:gb|go|tb|to)', text)
-             if simple_gb:
-                 val = int(simple_gb.group(1))
-                 if 'tb' in simple_gb.group(0) or 'to' in simple_gb.group(0): val *= 1024
-                 specs['ssd'] = val
+            simple_gb = re.search(r'(\d+)\s*(?:gb|go|tb|to)', text)
+            if simple_gb:
+                val = int(simple_gb.group(1))
+                if 'tb' in simple_gb.group(0) or 'to' in simple_gb.group(0):
+                    val *= 1024
+                specs['ssd'] = val
 
     # Chip
     # M-series
@@ -326,8 +458,11 @@ def parse_specs(text, category='mac'):
         if a_chip:
             specs['chip'] = a_chip.group(1).upper()
 
-    # Screen Size (Watch size / Screen)
-    screen_match = re.search(r'(\d+[,.]\d+)["”]', text)
+    # Screen size (inch- or locale-word based) and watch size (mm)
+    # Prefer decimal measurements (e.g. 13.6) over integer mentions (e.g. "13-inch").
+    screen_match = re.search(r'(\d{1,2}[.,]\d)\s*(?:["”]|-?\s*(?:inch|inches|cal(?:i|owy|owe)?|zoll|pouces|pulgadas|pollici))', text)
+    if not screen_match:
+        screen_match = re.search(r'(\d{1,2})\s*(?:["”]|-?\s*(?:inch|inches|cal(?:i|owy|owe)?|zoll|pouces|pulgadas|pollici))', text)
     if screen_match:
         specs['screen'] = float(screen_match.group(1).replace(',', '.'))
     elif category == 'watch' or specs['device_type'] == 'Apple Watch':
@@ -346,7 +481,7 @@ def generate_html(all_products):
     # Determine unique filter values
     countries = sorted(list(set(p['country'] for p in all_products)))
     categories = sorted(list(set(p['category'] for p in all_products)))
-    device_types = sorted(list(set(p['specs']['device_type'] for p in all_products)))
+    device_types = sorted(list(set(device_filter_label(p) for p in all_products)))
     # For filters, maybe we should separate by category or just list all
     ram_options = sorted(list(set(p['specs']['ram'] for p in all_products if p['specs']['ram'] is not None)))
     ssd_options = sorted(list(set(p['specs']['ssd'] for p in all_products if p['specs']['ssd'] is not None)))
@@ -360,25 +495,95 @@ def generate_html(all_products):
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Apple Refurbished Tracker</title>
     <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f5f5f7; margin: 0; padding: 20px; }}
+        :root {{
+            --bg-0: #f3f6fc;
+            --bg-1: #ffffff;
+            --panel: #ffffff;
+            --panel-border: #d6ddef;
+            --text: #111827;
+            --muted: #5a667f;
+            --accent: #2563eb;
+            --price: #0a7f46;
+            --card-grad-1: #ffffff;
+            --card-grad-2: #f6f8ff;
+            --img-grad-1: #ffffff;
+            --img-grad-2: #ffffff;
+            --img-shadow: rgba(0, 0, 0, 0);
+            --img-blend: normal;
+            --img-filter: none;
+            --img-overlay: transparent;
+            --bg-glow-1: rgba(118, 156, 255, 0.25);
+            --bg-glow-2: rgba(133, 182, 255, 0.22);
+        }}
+        :root[data-theme='dark'] {{
+            --bg-0: #090c14;
+            --bg-1: #121829;
+            --panel: #171f33;
+            --panel-border: #2a3554;
+            --text: #ecf1ff;
+            --muted: #95a3c8;
+            --accent: #8ec5ff;
+            --price: #b9f8d3;
+            --card-grad-1: #1f2a45;
+            --card-grad-2: #141c2f;
+            --img-grad-1: #2a3554;
+            --img-grad-2: #141c2f;
+            --img-shadow: rgba(0,0,0,0.45);
+            --img-blend: multiply;
+            --img-filter: drop-shadow(0 14px 18px var(--img-shadow)) contrast(1.03);
+            --img-overlay: rgba(9,12,20,0.20);
+            --bg-glow-1: rgba(38, 53, 91, 0.60);
+            --bg-glow-2: rgba(30, 65, 120, 0.45);
+        }}
+        @media (prefers-color-scheme: dark) {{
+            :root:not([data-theme='light']) {{
+                --bg-0: #090c14;
+                --bg-1: #121829;
+                --panel: #171f33;
+                --panel-border: #2a3554;
+                --text: #ecf1ff;
+                --muted: #95a3c8;
+                --accent: #8ec5ff;
+                --price: #b9f8d3;
+                --card-grad-1: #1f2a45;
+                --card-grad-2: #141c2f;
+                --img-grad-1: #2a3554;
+                --img-grad-2: #141c2f;
+                --img-shadow: rgba(0,0,0,0.45);
+                --img-blend: multiply;
+                --img-filter: drop-shadow(0 14px 18px var(--img-shadow)) contrast(1.03);
+                --img-overlay: rgba(9,12,20,0.20);
+                --bg-glow-1: rgba(38, 53, 91, 0.60);
+                --bg-glow-2: rgba(30, 65, 120, 0.45);
+            }}
+        }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: radial-gradient(1300px 500px at 10% -10%, var(--bg-glow-1) 0%, transparent 65%), radial-gradient(1000px 400px at 90% -20%, var(--bg-glow-2) 0%, transparent 70%), linear-gradient(180deg, var(--bg-1), var(--bg-0));
+            color: var(--text);
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+        }}
         .header {{ text-align: center; margin-bottom: 30px; }}
         .header h1 {{ margin-bottom: 10px; }}
         .controls {{ display: flex; gap: 15px; justify-content: center; margin-bottom: 20px; flex-wrap: wrap; }}
-        select {{ padding: 8px; border-radius: 8px; border: 1px solid #d2d2d7; font-size: 14px; }}
+        select {{ padding: 8px; border-radius: 8px; border: 1px solid var(--panel-border); font-size: 14px; background: var(--panel); color: var(--text); }}
         .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; max-width: 1200px; margin: 0 auto; }}
-        .card {{ background: white; border-radius: 18px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05); transition: transform 0.2s; display: flex; flex-direction: column; }}
-        .card:hover {{ transform: translateY(-4px); box-shadow: 0 10px 15px rgba(0,0,0,0.1); }}
-        .image-container {{ height: 200px; display: flex; align-items: center; justify-content: center; padding: 20px; background: white; }}
-        .image-container img {{ max-height: 100%; max-width: 100%; object-fit: contain; }}
+        .card {{ background: linear-gradient(180deg, var(--card-grad-1), var(--card-grad-2)); border: 1px solid var(--panel-border); border-radius: 18px; overflow: hidden; box-shadow: 0 8px 26px rgba(0,0,0,0.18); transition: transform 0.2s, border-color 0.2s; display: flex; flex-direction: column; }}
+        .card:hover {{ transform: translateY(-4px); border-color: #3a4d79; }}
+        .image-container {{ height: 200px; display: flex; align-items: center; justify-content: center; padding: 20px; background: radial-gradient(circle at 50% 30%, var(--img-grad-1), var(--img-grad-2) 75%); position: relative; overflow: hidden; }}
+        .image-container::after {{ content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 50% 50%, transparent 40%, var(--img-overlay) 100%); pointer-events: none; }}
+        .image-container img {{ max-height: 100%; max-width: 100%; object-fit: contain; filter: var(--img-filter); mix-blend-mode: var(--img-blend); border-radius: 14px; }}
         .content {{ padding: 20px; flex-grow: 1; display: flex; flex-direction: column; }}
-        .category-label {{ font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #86868b; margin-bottom: 4px; font-weight: 600; }}
-        .title {{ font-size: 16px; font-weight: 600; margin-bottom: 8px; color: #1d1d1f; line-height: 1.4; }}
-        .specs {{ font-size: 12px; color: #86868b; margin-bottom: 12px; flex-grow: 1; }}
+        .category-label {{ font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }}
+        .title {{ font-size: 16px; font-weight: 600; margin-bottom: 8px; color: var(--text); line-height: 1.4; }}
+        .specs {{ font-size: 12px; color: var(--muted); margin-bottom: 12px; flex-grow: 1; }}
         .price-row {{ display: flex; justify-content: space-between; align-items: flex-end; margin-top: 10px; }}
-        .price {{ font-size: 18px; font-weight: 700; color: #1d1d1f; }}
-        .price-eur {{ font-size: 13px; color: #86868b; }}
-        .attribution {{ position: absolute; top: 20px; right: 20px; font-size: 12px; color: #86868b; }}
-        .attribution a {{ color: #0066cc; text-decoration: none; font-weight: 600; }}
+        .price {{ font-size: 18px; font-weight: 700; color: var(--price); }}
+        .price-eur {{ font-size: 13px; color: var(--muted); }}
+        .attribution {{ position: absolute; top: 20px; right: 20px; font-size: 12px; color: var(--muted); }}
+        .attribution a {{ color: var(--accent); text-decoration: none; font-weight: 600; }}
         .attribution a:hover {{ text-decoration: underline; }}
         a {{ text-decoration: none; color: inherit; }}
     </style>
@@ -391,33 +596,38 @@ def generate_html(all_products):
     <div class="header">
         <h1>Apple Refurbished Tracker</h1>
         <p>Tracking {len(all_products)} items across {len(countries)} countries</p>
-        <p style="font-size: 14px; color: #86868b; margin-top: 5px;">Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        <p style="font-size: 14px; color: var(--muted); margin-top: 5px;">Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
     </div>
 
     <div class="controls">
         <select id="countryFilter" onchange="renderGrid()">
             <option value="All">All Countries</option>
-            {''.join(f'<option value="{c}">{c}</option>' for c in countries)}
+            {''.join(html_option(c) for c in countries)}
         </select>
         <select id="categoryFilter" onchange="renderGrid()">
             <option value="All">All Categories</option>
-            {''.join(f'<option value="{cat}">{cat.title()}</option>' for cat in categories)}
+            {''.join(html_option(cat, cat.title()) for cat in categories)}
         </select>
         <select id="deviceFilter" onchange="renderGrid()">
             <option value="All">All Devices</option>
-            {''.join(f'<option value="{d}">{d}</option>' for d in device_types)}
+            {''.join(html_option(d) for d in device_types)}
         </select>
         <select id="ramFilter" onchange="renderGrid()">
             <option value="All">All RAM</option>
-            {''.join(f'<option value="{r}">{r} GB</option>' for r in ram_options)}
+            {''.join(html_option(r, f"{r} GB") for r in ram_options)}
         </select>
         <select id="ssdFilter" onchange="renderGrid()">
             <option value="All">All SSD</option>
-            {''.join(f'<option value="{s}">{s if s < 1024 else s/1024} {"GB" if s < 1024 else "TB"}</option>' for s in ssd_options)}
+            {''.join(html_option(s, f"{s if s < 1024 else s/1024} {'GB' if s < 1024 else 'TB'}") for s in ssd_options)}
         </select>
         <select id="sortFilter" onchange="renderGrid()">
             <option value="price_asc">Price: Low to High</option>
             <option value="price_desc">Price: High to Low</option>
+        </select>
+        <select id="themeFilter" onchange="setTheme(this.value)">
+            <option value="system">Theme: System</option>
+            <option value="light">Theme: Light</option>
+            <option value="dark">Theme: Dark</option>
         </select>
     </div>
 
@@ -449,6 +659,38 @@ def generate_html(all_products):
             return gb >= 1024 ? (gb/1024) + ' TB' : gb + ' GB';
         }}
 
+        function formatScreen(screen) {{
+            if (!screen) return '';
+            const s = Number.isInteger(screen) ? screen.toString() : screen.toFixed(1).replace(/\\.0$/, '');
+            return s + '"';
+        }}
+
+        function bucketScreen(screen) {{
+            if (!screen) return null;
+            const value = Number(screen);
+            if (value >= 12.7 && value < 14) return 13;
+            if (value < 20) return Math.floor(value);
+            return null;
+        }}
+
+        function getDeviceFilterValue(p) {{
+            const bucket = bucketScreen(p.specs.screen);
+            if (bucket && p.specs.device_type !== 'Apple Watch' && p.specs.device_type !== 'Display') {{
+                return `${{p.specs.device_type}} ${{bucket}}"`;
+            }}
+            return p.specs.device_type;
+        }}
+
+        function setTheme(theme) {{
+            const root = document.documentElement;
+            if (theme === 'light' || theme === 'dark') {{
+                root.setAttribute('data-theme', theme);
+            }} else {{
+                root.removeAttribute('data-theme');
+            }}
+            localStorage.setItem('theme-preference', theme);
+        }}
+
         function renderGrid() {{
             const country = document.getElementById('countryFilter').value;
             const category = document.getElementById('categoryFilter').value;
@@ -463,7 +705,7 @@ def generate_html(all_products):
             let filtered = products.filter(p => {{
                 return (country === 'All' || p.country === country) &&
                        (category === 'All' || p.category === category) &&
-                       (device === 'All' || p.specs.device_type === device) &&
+                       (device === 'All' || getDeviceFilterValue(p) === device) &&
                        (ram === 'All' || (p.specs.ram && p.specs.ram.toString() === ram)) &&
                        (ssd === 'All' || (p.specs.ssd && p.specs.ssd.toString() === ssd));
             }});
@@ -482,6 +724,7 @@ def generate_html(all_products):
                 
                 let specList = [];
                 if (p.specs.chip) specList.push(p.specs.chip);
+                if (p.specs.screen && (p.specs.device_type === 'MacBook Air' || p.specs.device_type === 'MacBook Pro' || p.specs.device_type === 'iMac' || p.specs.device_type === 'Display')) specList.push(formatScreen(p.specs.screen) + ' Display');
                 if (p.specs.ram) specList.push(p.specs.ram + ' GB RAM');
                 if (p.specs.ssd) specList.push(formatSSD(p.specs.ssd) + ' SSD');
                 
@@ -511,6 +754,9 @@ def generate_html(all_products):
         }}
         
         // Initial render
+        const savedTheme = localStorage.getItem('theme-preference') || 'system';
+        document.getElementById('themeFilter').value = savedTheme;
+        setTheme(savedTheme);
         renderGrid();
     </script>
 </body>
