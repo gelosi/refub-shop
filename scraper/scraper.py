@@ -511,6 +511,39 @@ def generate_html(all_products):
     ram_options = sorted(list(set(p['specs']['ram'] for p in all_products if p['specs']['ram'] is not None)))
     ssd_options = sorted(list(set(p['specs']['ssd'] for p in all_products if p['specs']['ssd'] is not None)))
 
+    issue_lines = []
+
+    macs = [p for p in all_products if p.get('category') == 'mac']
+    if macs:
+        missing_mac_specs = sum(1 for p in macs if p.get('specs', {}).get('ram') is None or p.get('specs', {}).get('ssd') is None)
+        if missing_mac_specs:
+            issue_lines.append(f"Mac missing RAM/SSD: {missing_mac_specs / len(macs) * 100:.1f}%")
+
+    iphones = [p for p in all_products if p.get('category') == 'iphone']
+    if iphones:
+        missing_iphone_storage = sum(1 for p in iphones if p.get('specs', {}).get('ssd') is None)
+        if missing_iphone_storage:
+            issue_lines.append(f"iPhone missing storage: {missing_iphone_storage / len(iphones) * 100:.1f}%")
+
+    ipads = [p for p in all_products if p.get('category') == 'ipad']
+    if ipads:
+        missing_ipad_storage = sum(1 for p in ipads if p.get('specs', {}).get('ssd') is None)
+        if missing_ipad_storage:
+            issue_lines.append(f"iPad missing storage: {missing_ipad_storage / len(ipads) * 100:.1f}%")
+
+    other_devices = [p for p in all_products if p.get('category') not in {'mac', 'iphone', 'ipad'}]
+    if other_devices:
+        missing_other_prices = sum(
+            1 for p in other_devices
+            if not isinstance(p.get('price'), (int, float)) or p.get('price') <= 0
+        )
+        if missing_other_prices:
+            issue_lines.append(f"Other devices missing price: {missing_other_prices / len(other_devices) * 100:.1f}%")
+
+    issue_stats_html = ""
+    if issue_lines:
+        issue_stats_html = '<div class="issue-stats"><strong>Issues</strong><br>' + '<br>'.join(escape(line) for line in issue_lines) + '</div>'
+
     json_data = json.dumps(all_products)
     
     html = f"""<!DOCTYPE html>
@@ -610,10 +643,26 @@ def generate_html(all_products):
         .attribution {{ position: absolute; top: 20px; right: 20px; font-size: 12px; color: var(--muted); }}
         .attribution a {{ color: var(--accent); text-decoration: none; font-weight: 600; }}
         .attribution a:hover {{ text-decoration: underline; }}
+        .issue-stats {{
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            z-index: 10;
+            max-width: 260px;
+            font-size: 12px;
+            line-height: 1.35;
+            color: var(--text);
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+            border-radius: 10px;
+            padding: 8px 10px;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+        }}
         a {{ text-decoration: none; color: inherit; }}
     </style>
 </head>
 <body>
+    {issue_stats_html}
     <div class="attribution">
         made by <a href="https://gelosi.github.io" target="_blank">gelosi</a><br>
         get notifications via <a href="https://refurb-tracker.com" target="_blank">refurb-tracker</a>
