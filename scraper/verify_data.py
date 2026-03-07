@@ -23,6 +23,7 @@ def verify():
 
         missing_ram = sum(1 for p in ram_applicable if p['specs']['ram'] is None)
         missing_ssd = sum(1 for p in ssd_applicable if p['specs']['ssd'] is None)
+        implausible_ram = [p for p in ram_applicable if isinstance(p['specs']['ram'], int) and p['specs']['ram'] > 512]
 
         print(f"Total Products: {total}")
         if ram_applicable:
@@ -33,6 +34,7 @@ def verify():
             print(f"Missing SSD (mac/ipad/iphone/appletv): {missing_ssd} ({missing_ssd/len(ssd_applicable)*100:.1f}%)")
         else:
             print("Missing SSD (mac/ipad/iphone/appletv): 0")
+        print(f"Implausible RAM values (>512 GB): {len(implausible_ram)}")
 
         print("\nSample Missing RAM (max 25):")
         shown = 0
@@ -51,6 +53,11 @@ def verify():
                 shown += 1
                 if shown >= 25:
                     break
+
+        if implausible_ram:
+            print("\nImplausible RAM entries:")
+            for p in implausible_ram[:25]:
+                print(f"- {p['specs']['ram']} GB | {p['name']} ({p['country']})")
         
     except Exception as e:
         print(f"Verification failed: {e}")

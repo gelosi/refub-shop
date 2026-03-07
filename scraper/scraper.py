@@ -110,6 +110,28 @@ def normalize_text(text):
     return text
 
 
+VALID_RAM_GB_VALUES = {4, 8, 12, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192, 256, 512}
+
+
+def sanitize_ram_value(raw_value):
+    """Normalize RAM values and recover known year+RAM concatenation glitches (e.g. 202416 -> 16)."""
+    if raw_value in VALID_RAM_GB_VALUES:
+        return raw_value
+
+    digits = str(raw_value)
+    if len(digits) >= 6:
+        for suffix_len in (3, 2, 1):
+            if len(digits) <= suffix_len:
+                continue
+            suffix = int(digits[-suffix_len:])
+            prefix = digits[:-suffix_len]
+            if suffix in VALID_RAM_GB_VALUES and re.fullmatch(r'20\d{2}', prefix):
+                return suffix
+
+    # Drop obviously implausible values to avoid polluting filters/output.
+    return None
+
+
 def merge_specs(base, updates):
     merged = dict(base)
     for key in ['ram', 'ssd', 'chip', 'screen']:
@@ -411,14 +433,14 @@ def parse_specs(text, category='mac'):
     # RAM (Mostly for Mac)
     if not is_accessory and (category == 'mac' or specs['device_type'] in MAC_DEVICE_TYPES):
         ram_patterns = [
-            r'(\d+)\s*(?:gb|go)\s*(?:(?:de|di|del|della|z)\s+)?(?:unified\s*memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|mémoire|zunifikowanej\s*pamięci|pamięci\s*ram|pamięć\s*ram|centraal\s*geheugen|geheugen|memoria\s*unificada|memoria\s*unificata|ram|memory|arbeitsspeicher)',
-            r'(?:(?:ram|memory|arbeitsspeicher|mémoire|pamięć|pamięci|geheugen|memoria)\s*)[:\-]?\s*(\d+)\s*(?:gb|go)',
+            r'(?<!\d)(?:20\d{2}[\s-]*)?(\d{1,3})\s*(?:gb|go)\s*(?:(?:de|di|del|della|z)\s+)?(?:unified\s*memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|mémoire|zunifikowanej\s*pamięci|pamięci\s*ram|pamięć\s*ram|centraal\s*geheugen|geheugen|memoria\s*unificada|memoria\s*unificata|ram|memory|arbeitsspeicher)',
+            r'(?:(?:ram|memory|arbeitsspeicher|mémoire|pamięć|pamięci|geheugen|memoria)\s*)[:\-]\s*(?<!\d)(\d{1,4})\s*(?:gb|go)',
         ]
 
         for pattern in ram_patterns:
             ram_match = re.search(pattern, text)
             if ram_match:
-                specs['ram'] = int(ram_match.group(1))
+                specs['ram'] = sanitize_ram_value(int(ram_match.group(1)))
                 break
 
     # SSD
