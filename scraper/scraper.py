@@ -149,18 +149,21 @@ def extract_detail_text(product_url):
     with urllib.request.urlopen(req, timeout=30) as response:
         html = response.read().decode('utf-8', errors='ignore')
 
-    # Product pages include rich specs in the meta description, often language-localized.
-    desc_match = re.search(
-        r'<meta\s+name=["\']description["\']\s+content=["\'](.*?)["\']\s*/?>',
-        html,
-        re.IGNORECASE | re.DOTALL,
-    )
-    title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+    soup = BeautifulSoup(html, 'html.parser')
     parts = []
-    if title_match:
-        parts.append(title_match.group(1))
-    if desc_match:
-        parts.append(desc_match.group(1).replace('|', ' '))
+    if soup.title and soup.title.get_text(strip=True):
+        parts.append(soup.title.get_text(" ", strip=True))
+
+    desc_meta = soup.find('meta', attrs={'name': 'description'}) or soup.find('meta', attrs={'property': 'og:description'})
+    if desc_meta and desc_meta.get('content'):
+        parts.append(desc_meta.get('content').replace('|', ' '))
+
+    # Meta description is often generic; include visible body text to capture localized RAM/SSD lines.
+    if soup.body:
+        body_text = soup.body.get_text(" ", strip=True)
+        if body_text:
+            parts.append(body_text[:20000])
+
     return normalize_text(" ".join(parts))
 
 
@@ -445,9 +448,9 @@ def parse_specs(text, category='mac'):
 
     # SSD
     if not is_accessory:
-        ssd_match = re.search(r'(?:ssd|flash storage|stockage|opslag|almacenamiento|speicher)\s*(?:von|de|del|di|z|da)?\s*(\d+)\s*(?:gb|go|tb|to)', text)
+        ssd_match = re.search(r'(?:ssd|flash\s*storage|massenspeicher|stockage|opslag|almacenamiento|archiviazione|storage)\s*(?:von|de|del|di|z|da)?\s*(\d+)\s*(?:gb|go|tb|to)', text)
         if not ssd_match:
-            ssd_match = re.search(r'(\d+)\s*(?:gb|go|tb|to)\s*(?:ssd|flash storage|stockage|opslag|almacenamiento|lagring|úložiště|pamięci\s*masowej|speicher)', text)
+            ssd_match = re.search(r'(\d+)\s*(?:gb|go|tb|to)\s*(?:ssd|flash\s*storage|massenspeicher|stockage|opslag|almacenamiento|archiviazione|lagring|úložiště|pamięci\s*masowej|storage|speicherplatz)', text)
             
         if ssd_match:
             val = int(ssd_match.group(1))
