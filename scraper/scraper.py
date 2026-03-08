@@ -100,6 +100,7 @@ OUTPUT_FILE = "index.html"
 ACCESSORY_TYPES = {'Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'HomePod', 'AirPods', 'Display', 'Accessory'}
 MAC_DEVICE_TYPES = {'Mac', 'MacBook Air', 'MacBook Pro', 'Mac mini', 'iMac', 'Mac Studio', 'Mac Pro'}
 MACBOOK_TYPES = {'MacBook Air', 'MacBook Pro'}
+SCREEN_BUCKET_DEVICE_TYPES = {'MacBook Air', 'MacBook Pro', 'iMac', 'iPad', 'iPad Pro', 'iPad Air', 'iPad mini'}
 
 
 def normalize_text(text):
@@ -244,13 +245,19 @@ def bucket_screen_inches(screen):
     return None
 
 
+def supports_screen_buckets(device_type):
+    if device_type in SCREEN_BUCKET_DEVICE_TYPES:
+        return True
+    return device_type.startswith('iPhone')
+
+
 def device_filter_label(product):
     specs = product.get('specs', {})
     device_type = specs.get('device_type', 'Device')
     screen = specs.get('screen')
 
     inch_bucket = bucket_screen_inches(screen)
-    if inch_bucket is not None and device_type not in ['Apple Watch', 'Display']:
+    if inch_bucket is not None and supports_screen_buckets(device_type):
         return f"{device_type} {inch_bucket}\""
     return device_type
 
@@ -485,11 +492,12 @@ def parse_specs(text, category='mac'):
 
     # Screen size (inch- or locale-word based) and watch size (mm)
     # Prefer decimal measurements (e.g. 13.6) over integer mentions (e.g. "13-inch").
-    screen_match = re.search(r'(\d{1,2}[.,]\d)\s*(?:["”]|-?\s*(?:inch|inches|cal(?:i|owy|owe)?|zoll|pouces|pulgadas|pollici))', text)
-    if not screen_match:
-        screen_match = re.search(r'(\d{1,2})\s*(?:["”]|-?\s*(?:inch|inches|cal(?:i|owy|owe)?|zoll|pouces|pulgadas|pollici))', text)
-    if screen_match:
-        specs['screen'] = float(screen_match.group(1).replace(',', '.'))
+    if supports_screen_buckets(specs['device_type']):
+        screen_match = re.search(r'(\d{1,2}[.,]\d)\s*(?:["”]|-?\s*(?:inch|inches|cal(?:i|owy|owe)?|zoll|pouces|pulgadas|pollici))', text)
+        if not screen_match:
+            screen_match = re.search(r'(\d{1,2})\s*(?:["”]|-?\s*(?:inch|inches|cal(?:i|owy|owe)?|zoll|pouces|pulgadas|pollici))', text)
+        if screen_match:
+            specs['screen'] = float(screen_match.group(1).replace(',', '.'))
     elif category == 'watch' or specs['device_type'] == 'Apple Watch':
         # Watch Case Size (mm)
         mm_match = re.search(r'(\d+)\s*mm', text)
@@ -747,9 +755,21 @@ def generate_html(all_products):
             return null;
         }}
 
+        function supportsScreenBucket(deviceType) {{
+            return [
+                'MacBook Air',
+                'MacBook Pro',
+                'iMac',
+                'iPad',
+                'iPad Pro',
+                'iPad Air',
+                'iPad mini',
+            ].includes(deviceType) || deviceType.startsWith('iPhone');
+        }}
+
         function getDeviceFilterValue(p) {{
             const bucket = bucketScreen(p.specs.screen);
-            if (bucket && p.specs.device_type !== 'Apple Watch' && p.specs.device_type !== 'Display') {{
+            if (bucket && supportsScreenBucket(p.specs.device_type)) {{
                 return `${{p.specs.device_type}} ${{bucket}}"`;
             }}
             return p.specs.device_type;
