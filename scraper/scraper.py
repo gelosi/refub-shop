@@ -101,6 +101,14 @@ ACCESSORY_TYPES = {'Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'HomePod', '
 MAC_DEVICE_TYPES = {'Mac', 'MacBook Air', 'MacBook Pro', 'Mac mini', 'iMac', 'Mac Studio', 'Mac Pro'}
 MACBOOK_TYPES = {'MacBook Air', 'MacBook Pro'}
 SCREEN_BUCKET_DEVICE_TYPES = {'MacBook Air', 'MacBook Pro', 'iMac', 'iPad', 'iPad Pro', 'iPad Air', 'iPad mini'}
+NUMBER_UNIT_SEP = r'\s*(?:-\s*)?'
+KNOWN_SSD_OVERRIDES_BY_PRODUCT_CODE = {
+    # iMac M4 8-core CPU / 8-core GPU listings where storage is intermittently absent in localized detail text.
+    "fwue3ze": 256,
+    "fwug3ze": 256,
+    "g1e20ze": 256,
+    "g1e50n": 256,
+}
 
 
 def normalize_text(text):
@@ -145,11 +153,22 @@ def merge_specs(base, updates):
     return merged
 
 
-def extract_detail_text(product_url):
-    req = urllib.request.Request(product_url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=30) as response:
-        html = response.read().decode('utf-8', errors='ignore')
+def apply_known_overrides(product):
+    url = product.get('url', '')
+    match = re.search(r'/product/([^/]+)/', url)
+    if not match:
+        return product
 
+    code = match.group(1).lower()
+    specs = product.get('specs', {})
+
+    if specs.get('ssd') is None and code in KNOWN_SSD_OVERRIDES_BY_PRODUCT_CODE:
+        specs['ssd'] = KNOWN_SSD_OVERRIDES_BY_PRODUCT_CODE[code]
+
+    return product
+
+
+def extract_detail_text_from_html(html):
     soup = BeautifulSoup(html, 'html.parser')
     parts = []
     if soup.title and soup.title.get_text(strip=True):
@@ -165,7 +184,28 @@ def extract_detail_text(product_url):
         if body_text:
             parts.append(body_text[:20000])
 
+    # Structured data can include storage fields that are not visible in normal copy.
+    for script in soup.select('script[type="application/ld+json"]'):
+        script_text = normalize_text(script.get_text(" ", strip=True))
+        if script_text:
+            parts.append(script_text[:12000])
+
     return normalize_text(" ".join(parts))
+
+
+def extract_detail_text(product_url):
+    req = urllib.request.Request(product_url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        html = response.read().decode('utf-8', errors='ignore')
+    return extract_detail_text_from_html(html)
+
+
+def extract_detail_text_playwright(page, product_url):
+    page.goto(product_url, timeout=60000, wait_until="domcontentloaded")
+    for _ in range(3):
+        page.evaluate("window.scrollBy(0, 1200)")
+        time.sleep(0.2)
+    return extract_detail_text_from_html(page.content())
 
 
 def needs_detail_enrichment(product):
@@ -185,33 +225,59 @@ def needs_detail_enrichment(product):
     return False
 
 
-def enrich_products_with_detail_specs(products, country_code):
+def enrich_products_with_detail_specs(products, country_code, browser=None):
     cache = {}
     enriched = 0
     errors = []
+    detail_page = browser.new_page() if browser else None
 
-    for product in products:
-        if not needs_detail_enrichment(product):
-            continue
+    try:
+        for product in products:
+            if not needs_detail_enrichment(product):
+                continue
 
-        url = product.get('url')
-        if not url:
-            continue
+            url = product.get('url')
+            if not url:
+                continue
 
-        try:
-            if url not in cache:
-                cache[url] = extract_detail_text(url)
-                time.sleep(0.12)  # small throttle to reduce bursty requests
+            try:
+                if url not in cache:
+                    detail_texts = []
 
-            detail_text = cache[url]
-            if detail_text:
-                detail_specs, _ = parse_specs(detail_text, product.get('category', 'mac'))
-                merged_specs = merge_specs(product['specs'], detail_specs)
-                if merged_specs != product['specs']:
-                    product['specs'] = merged_specs
-                    enriched += 1
-        except Exception as e:
-            errors.append(f"Detail enrichment failed ({country_code}): {url} -> {e}")
+                    # Keep urllib as a stable baseline.
+                    try:
+                        urllib_text = extract_detail_text(url)
+                        if urllib_text:
+                            detail_texts.append(urllib_text)
+                    except Exception as e:
+                        errors.append(f"urllib detail fetch failed ({country_code}): {url} -> {e}")
+
+                    # Rendered page can expose extra localized/spec data.
+                    if detail_page is not None:
+                        try:
+                            playwright_text = extract_detail_text_playwright(detail_page, url)
+                            if playwright_text:
+                                detail_texts.append(playwright_text)
+                        except Exception as e:
+                            errors.append(f"Playwright detail fetch failed ({country_code}): {url} -> {e}")
+
+                    cache[url] = detail_texts
+                    time.sleep(0.12)  # small throttle to reduce bursty requests
+
+                detail_texts = cache[url]
+                if detail_texts:
+                    merged_specs = dict(product['specs'])
+                    for detail_text in detail_texts:
+                        detail_specs, _ = parse_specs(detail_text, product.get('category', 'mac'))
+                        merged_specs = merge_specs(merged_specs, detail_specs)
+                    if merged_specs != product['specs']:
+                        product['specs'] = merged_specs
+                        enriched += 1
+            except Exception as e:
+                errors.append(f"Detail enrichment failed ({country_code}): {url} -> {e}")
+    finally:
+        if detail_page is not None:
+            detail_page.close()
 
     print(f"  Detail enrichment ({country_code}): updated {enriched} products")
     return errors
@@ -246,6 +312,8 @@ def bucket_screen_inches(screen):
 
 
 def supports_screen_buckets(device_type):
+    if not isinstance(device_type, str):
+        return False
     if device_type in SCREEN_BUCKET_DEVICE_TYPES:
         return True
     return device_type.startswith('iPhone')
@@ -281,8 +349,10 @@ def fetch_store_data(country_code, config):
             page.goto(url, timeout=60000)
             
             # Check if 404 or redirect to home (some categories might be missing in some countries)
-            if "as-refurbished" not in page.url and category not in page.url:
-                pass
+            if "as-refurbished" not in page.url and f"/{category}" not in page.url:
+                print(f"  Skipping {category} in {country_code}: redirected to {page.url}")
+                page.close()
+                continue
 
             # Incremental scroll to trigger lazy loading
             for _ in range(5): 
@@ -306,7 +376,18 @@ def fetch_store_data(country_code, config):
                     
                     # Image
                     img_elem = tile.select_one('img')
-                    image = img_elem['src'] if img_elem else ""
+                    image = ""
+                    if img_elem:
+                        image = (
+                            img_elem.get('src')
+                            or img_elem.get('data-src')
+                            or img_elem.get('data-image-src')
+                            or ""
+                        )
+                        if not image:
+                            srcset = img_elem.get('srcset') or img_elem.get('data-srcset') or ""
+                            if srcset:
+                                image = srcset.split(",")[0].strip().split(" ")[0]
                     
                     # Price Parsing
                     price = 0
@@ -359,6 +440,7 @@ def fetch_store_data(country_code, config):
                         "url": item_url,
                         "specs": specs
                     }
+                    prod = apply_known_overrides(prod)
                     items.append(prod)
                     
                 except Exception as e:
@@ -374,7 +456,8 @@ def fetch_store_data(country_code, config):
         page.close()
         all_category_items.extend(items)
 
-    country_errors.extend(enrich_products_with_detail_specs(all_category_items, country_code))
+    country_errors.extend(enrich_products_with_detail_specs(all_category_items, country_code, browser))
+    all_category_items = [apply_known_overrides(p) for p in all_category_items]
     browser.close()
     playwright.stop()
     return all_category_items, country_errors
@@ -443,8 +526,8 @@ def parse_specs(text, category='mac'):
     # RAM (Mostly for Mac)
     if not is_accessory and (category == 'mac' or specs['device_type'] in MAC_DEVICE_TYPES):
         ram_patterns = [
-            r'(?<!\d)(?:20\d{2}[\s-]*)?(\d{1,3})\s*(?:gb|go)\s*(?:(?:de|di|del|della|z)\s+)?(?:unified\s*memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|mémoire|zunifikowanej\s*pamięci|pamięci\s*ram|pamięć\s*ram|centraal\s*geheugen|geheugen|memoria\s*unificada|memoria\s*unificata|ram|memory|arbeitsspeicher)',
-            r'(?:(?:ram|memory|arbeitsspeicher|mémoire|pamięć|pamięci|geheugen|memoria)\s*)[:\-]\s*(?<!\d)(\d{1,4})\s*(?:gb|go)',
+            rf'(?<!\d)(?:20\d{{2}}[\s-]*)?(\d{{1,3}}){NUMBER_UNIT_SEP}(?:gb|go)\b[\s,;:()/-]*(?:(?:de|di|del|della|z|van)\s+)?(?:unified\s*memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|mémoire|zunifikowanej\s*pamięci|pamięci\s*ram|pamięć\s*ram|centraal\s*geheugen|geheugen|memoria\s*unificada|memoria\s*unificata|ram|memory|arbeitsspeicher)',
+            rf'(?:(?:ram|memory|arbeitsspeicher|mémoire|pamięć|pamięci|geheugen|memoria)\s*)[:\-]\s*(?<!\d)(\d{{1,4}}){NUMBER_UNIT_SEP}(?:gb|go)\b',
         ]
 
         for pattern in ram_patterns:
@@ -455,9 +538,16 @@ def parse_specs(text, category='mac'):
 
     # SSD
     if not is_accessory:
-        ssd_match = re.search(r'(?:ssd|flash\s*storage|massenspeicher|stockage|opslag|almacenamiento|archiviazione|storage)\s*(?:von|de|del|di|z|da)?\s*(\d+)\s*(?:gb|go|tb|to)', text)
+        ssd_keywords = r'(?:ssd(?:\s*-\s*opslag)?|flash\s*storage|massenspeicher|stockage|opslag|almacenamiento|archiviazione|lagring|úložiště|pamięci\s*masowej|storage|speicherplatz)'
+        ssd_match = re.search(
+            rf'{ssd_keywords}[\s,;:()/-]*(?:von|de|del|di|z|da|van)?\s*(\d+){NUMBER_UNIT_SEP}(?:gb|go|tb|to)\b',
+            text
+        )
         if not ssd_match:
-            ssd_match = re.search(r'(\d+)\s*(?:gb|go|tb|to)\s*(?:ssd|flash\s*storage|massenspeicher|stockage|opslag|almacenamiento|archiviazione|lagring|úložiště|pamięci\s*masowej|storage|speicherplatz)', text)
+            ssd_match = re.search(
+                rf'(\d+){NUMBER_UNIT_SEP}(?:gb|go|tb|to)\b[\s,;:()/-]*{ssd_keywords}',
+                text
+            )
             
         if ssd_match:
             val = int(ssd_match.group(1))
@@ -472,6 +562,19 @@ def parse_specs(text, category='mac'):
             if simple_gb:
                 val = int(simple_gb.group(1))
                 if 'tb' in simple_gb.group(0) or 'to' in simple_gb.group(0):
+                    val *= 1024
+                specs['ssd'] = val
+
+        # Mac fallback for capacity-style wording that may omit explicit "SSD" token.
+        if specs['ssd'] is None and (category == 'mac' or specs['device_type'] in MAC_DEVICE_TYPES):
+            storage_capacity = re.search(
+                rf'(?:storage|opslag|stockage|massenspeicher|speicherplatz|almacenamiento|archiviazione|pamięci\s*masowej|pojemno(?:ść|sci)|capacity|capacità|capaciteit|kapazität|capacité)[\s,;:()/-]*(?:von|de|del|di|z|da|van|o)?[\s,;:()/-]*(\d+){NUMBER_UNIT_SEP}(?:gb|go|tb|to)\b',
+                text
+            )
+            if storage_capacity:
+                val = int(storage_capacity.group(1))
+                full_match = storage_capacity.group(0)
+                if 'tb' in full_match or 'to' in full_match:
                     val *= 1024
                 specs['ssd'] = val
 
@@ -523,9 +626,12 @@ def generate_html(all_products):
 
     macs = [p for p in all_products if p.get('category') == 'mac']
     if macs:
-        missing_mac_specs = sum(1 for p in macs if p.get('specs', {}).get('ram') is None or p.get('specs', {}).get('ssd') is None)
-        if missing_mac_specs:
-            issue_lines.append(f"Mac missing RAM/SSD: {missing_mac_specs / len(macs) * 100:.1f}%")
+        missing_mac_ram = sum(1 for p in macs if p.get('specs', {}).get('ram') is None)
+        missing_mac_ssd = sum(1 for p in macs if p.get('specs', {}).get('ssd') is None)
+        if missing_mac_ram:
+            issue_lines.append(f"Mac missing RAM: {missing_mac_ram / len(macs) * 100:.1f}%")
+        if missing_mac_ssd:
+            issue_lines.append(f"Mac missing SSD: {missing_mac_ssd / len(macs) * 100:.1f}%")
 
     iphones = [p for p in all_products if p.get('category') == 'iphone']
     if iphones:
