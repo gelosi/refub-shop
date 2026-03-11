@@ -1,0 +1,69 @@
+name: Validate Generated Data
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify-generated-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate Python syntax
+        run: python3 -m py_compile scraper/scraper.py scraper/verify_data.py scripts/metrics_gate.py
+
+      - name: Fetch base branch
+        run: git fetch origin "${{ github.base_ref }}" --depth=1
+
+      - name: Enforce regenerated index for scraper changes
+        run: |
+          changed_files="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")"
+          printf '%s\n' "$changed_files"
+
+          if printf '%s\n' "$changed_files" | grep -q '^scraper/' && ! printf '%s\n' "$changed_files" | grep -q '^index\.html$'; then
+            echo "Scraper changes must include a regenerated index.html." >&2
+            exit 1
+          fi
+
+      - name: Capture base metrics
+        run: |
+          git show "origin/${{ github.base_ref }}:index.html" > /tmp/base-index.html
+          python3 scraper/verify_data.py --json --index /tmp/base-index.html > /tmp/base-metrics.json
+
+      - name: Capture pull request metrics
+        run: |
+          python3 scraper/verify_data.py
+          python3 scraper/verify_data.py --json > /tmp/pr-metrics.json
+
+      - name: Compare metrics
+        id: gate
+        run: python3 scripts/metrics_gate.py /tmp/base-metrics.json /tmp/pr-metrics.json --github-output "$GITHUB_OUTPUT"
+
+      - name: Fail on regression
+        if: steps.gate.outputs.should_commit != 'true'
+        run: |
+          echo "${{ steps.gate.outputs.summary }}" >&2
+          exit 1
+
+      - name: Require measurable improvement for scraper/index changes
+        run: |
+          changed_files="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")"
+          if printf '%s\n' "$changed_files" | grep -Eq '^(scraper/|index\.html$)' && [ "${{ steps.gate.outputs.improved }}" != "true" ]; then
+            echo "Scraper or index changes must improve Missing RAM, Missing SSD, or Total Products." >&2
+            exit 1
+          fi

@@ -1,42 +1,207 @@
 name: Daily Scrape
-permissions:
-  contents: write
 
 on:
   schedule:
-    - cron: '0 8 * * *' # Runs at 08:00 UTC every day
-  workflow_dispatch: # Allows manual trigger
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
 
 jobs:
-  scrape:
+  scrape-and-gate:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 90
+
     steps:
-    - uses: actions/checkout@v2
-    
-    - name: Set up Python
-      uses: actions/setup-python@v2
-      with:
-        python-version: '3.9'
-        
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        playwright install --with-deps chromium
-        
-    - name: Run Scraper
-      run: |
-        python scraper/scraper.py
-        
-    - name: Verify Data
-      run: |
-        python scraper/verify_data.py
-        
-    - name: Commit and push changes
-      uses: stefanzweifel/git-auto-commit-action@v4
-      with:
-        commit_message: Daily data update
-        file_pattern: index.html
-      env:
-        GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Capture baseline metrics
+        run: python3 scraper/verify_data.py --json > before-metrics.json
+
+      - name: Run daily scrape
+        run: ./run_scraper.sh
+
+      - name: Capture latest scrape metrics
+        if: success()
+        run: python3 scraper/verify_data.py --json > after-metrics.json
+
+      - name: Evaluate metrics gate
+        id: gate
+        if: success()
+        run: |
+          python3 scripts/metrics_gate.py \
+            before-metrics.json \
+            after-metrics.json \
+            --github-output "$GITHUB_OUTPUT" \
+            --markdown-out metrics-summary.md
+
+      - name: Upload scrape artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-scrape-${{ github.run_id }}
+          path: |
+            before-metrics.json
+            after-metrics.json
+            metrics-summary.md
+            index.html
+          if-no-files-found: ignore
+
+      - name: Commit updated index
+        if: steps.gate.outputs.should_commit == 'true'
+        run: |
+          if git diff --quiet -- index.html; then
+            echo "No index.html changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git commit -m "Daily data update"
+          git push
+
+      - name: Close open regression issue
+        if: steps.gate.outputs.should_commit == 'true' && secrets.COPILOT_ASSIGNMENT_TOKEN != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_ASSIGNMENT_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const title = 'Daily scrape regression';
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const issue = issues.find((item) => item.title === title);
+            if (!issue) {
+              core.info('No open regression issue to close.');
+              return;
+            }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: issue.number,
+              body: 'Latest scheduled scrape passed the metrics gate. Closing this regression issue.',
+            });
+            await github.rest.issues.update({
+              owner,
+              repo,
+              issue_number: issue.number,
+              state: 'closed',
+            });
+
+      - name: Require Copilot assignment token for regressions
+        if: steps.gate.outputs.should_commit != 'true' && success() && secrets.COPILOT_ASSIGNMENT_TOKEN == ''
+        run: |
+          echo "Regression detected but COPILOT_ASSIGNMENT_TOKEN is not configured." >&2
+          exit 1
+
+      - name: Open or update Copilot issue
+        if: steps.gate.outputs.should_commit != 'true' && success() && secrets.COPILOT_ASSIGNMENT_TOKEN != ''
+        uses: actions/github-script@v7
+        env:
+          METRICS_SUMMARY_PATH: metrics-summary.md
+        with:
+          github-token: ${{ secrets.COPILOT_ASSIGNMENT_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const title = 'Daily scrape regression';
+            const summary = fs.readFileSync(process.env.METRICS_SUMMARY_PATH, 'utf8').trim();
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const body = [
+              summary,
+              '',
+              '## Copilot Task',
+              '- Read `AGENTS.md` and `.github/copilot-instructions.md` before editing.',
+              '- Reproduce with `./run_scraper.sh` or a narrower country scope first.',
+              '- Fix only the parser or enrichment logic required to improve the latest scrape.',
+              '- Regenerate `index.html` after any scraper change.',
+              '- Keep changes only if Missing RAM and/or Missing SSD improve, Total Products does not decrease, and implausible RAM values do not increase.',
+              '- Run `python3 -m py_compile scraper/scraper.py scraper/verify_data.py scripts/metrics_gate.py`.',
+              '- Run `python3 scraper/verify_data.py` and include exact totals in the PR summary.',
+              '',
+              `Workflow run: ${runUrl}`,
+            ].join('\n');
+
+            const labels = [
+              { name: 'automation', color: '0e8a16', description: 'Created by repository automation.' },
+              { name: 'scrape-regression', color: 'b60205', description: 'Latest scrape regressed against the committed baseline.' },
+              { name: 'copilot', color: '1d76db', description: 'Intended for GitHub Copilot coding agent.' },
+            ];
+
+            for (const label of labels) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name: label.name });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+                await github.rest.issues.createLabel({
+                  owner,
+                  repo,
+                  name: label.name,
+                  color: label.color,
+                  description: label.description,
+                });
+              }
+            }
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100,
+              labels: labels.map((label) => label.name).join(','),
+            });
+            const existing = issues.find((item) => item.title === title);
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: existing.number,
+                body,
+              });
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: existing.number,
+                state: 'open',
+                labels: labels.map((label) => label.name),
+              });
+              await github.rest.issues.addAssignees({
+                owner,
+                repo,
+                issue_number: existing.number,
+                assignees: ['copilot-swe-agent'],
+              });
+              core.info(`Updated issue #${existing.number}.`);
+              return;
+            }
+
+            const created = await github.rest.issues.create({
+              owner,
+              repo,
+              title,
+              body,
+              labels: labels.map((label) => label.name),
+              assignees: ['copilot-swe-agent'],
+            });
+            core.info(`Created issue #${created.data.number}.`);

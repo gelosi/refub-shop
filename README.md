@@ -62,6 +62,37 @@ The scraper behavior is defined in `scraper/scraper.py`. You can adjust:
 ## 🤖 GitHub Action
 A `.github/workflows/scrape.yml` file is included to run the scraper daily (at 08:00 UTC) and commit the updated `index.html` back to the repository.
 
+## 🤖 Automated Copilot Repair Loop
+This repository now includes a gated automation flow for GitHub Actions plus GitHub Copilot coding agent:
+
+- `.github/workflows/scrape.yml`
+  - runs the daily scrape
+  - captures verifier metrics before and after the run
+  - commits `index.html` only when `Total Products` does not decrease, missing RAM/SSD do not regress, and implausible RAM values do not regress
+  - opens or updates a Copilot-assigned issue when the latest scrape regresses
+- `.github/workflows/validate-generated-data.yml`
+  - validates pull requests against the current `main` branch metrics
+  - requires regenerated `index.html` when scraper code changes
+  - blocks scraper/index PRs that do not produce a measurable improvement
+- `.github/workflows/copilot-setup-steps.yml`
+  - bootstraps Python dependencies and Playwright for GitHub Copilot coding agent
+
+### One-Time GitHub Setup
+The repository files alone are not enough. You still need to configure GitHub:
+
+1. Enable GitHub Copilot coding agent for the repository.
+2. Add a repository secret named `COPILOT_ASSIGNMENT_TOKEN`.
+3. Use a token that can create issues and assign them in this repository.
+4. Optionally protect `main` and require the `Validate Generated Data` workflow before merge.
+
+### Copilot Issue Flow
+When the scheduled scrape regresses:
+
+1. The workflow does not commit the new `index.html`.
+2. It creates or updates a `Daily scrape regression` issue.
+3. The issue is assigned to Copilot and includes the baseline and latest verifier totals.
+4. Copilot is expected to open a PR with both the scraper fix and regenerated `index.html`.
+
 ## ⚠️ Disclaimer
 This tool is not affiliated with, endorsed by, or connected to Apple Inc. It is a hobbyist project ("vibecoded") provided for educational and personal tracking purposes only.
 
