@@ -1093,6 +1093,7 @@ def generate_html(all_products):
             --img-grad-2: #ffffff;
             --img-shadow: rgba(0, 0, 0, 0);
             --img-blend: normal;
+            --img-blend-hover: normal;
             --img-filter: none;
             --img-overlay: transparent;
             --bg-glow-1: rgba(118, 156, 255, 0.25);
@@ -1114,6 +1115,7 @@ def generate_html(all_products):
             --img-grad-2: #181b1a;
             --img-shadow: rgba(0,0,0,0.45);
             --img-blend: multiply;
+            --img-blend-hover: normal;
             --img-filter: drop-shadow(0 14px 18px var(--img-shadow)) contrast(1.03);
             --img-overlay: rgba(14,16,15,0.22);
             --bg-glow-1: rgba(92, 98, 94, 0.34);
@@ -1136,6 +1138,7 @@ def generate_html(all_products):
                 --img-grad-2: #181b1a;
                 --img-shadow: rgba(0,0,0,0.45);
                 --img-blend: multiply;
+                --img-blend-hover: normal;
                 --img-filter: drop-shadow(0 14px 18px var(--img-shadow)) contrast(1.03);
                 --img-overlay: rgba(14,16,15,0.22);
                 --bg-glow-1: rgba(92, 98, 94, 0.34);
@@ -1159,8 +1162,10 @@ def generate_html(all_products):
         .card {{ background: linear-gradient(180deg, var(--card-grad-1), var(--card-grad-2)); border: 1px solid var(--panel-border); border-radius: 18px; overflow: hidden; box-shadow: 0 8px 26px rgba(0,0,0,0.18); transition: transform 0.2s, border-color 0.2s; display: flex; flex-direction: column; }}
         .card:hover {{ transform: translateY(-4px); border-color: var(--frame-accent); }}
         .image-container {{ height: 200px; display: flex; align-items: center; justify-content: center; padding: 20px; background: radial-gradient(circle at 50% 30%, var(--img-grad-1), var(--img-grad-2) 75%); position: relative; overflow: hidden; }}
-        .image-container::after {{ content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 50% 50%, transparent 40%, var(--img-overlay) 100%); pointer-events: none; }}
-        .image-container img {{ max-height: 100%; max-width: 100%; object-fit: contain; filter: var(--img-filter); mix-blend-mode: var(--img-blend); border-radius: 14px; }}
+        .image-container::after {{ content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 50% 50%, transparent 40%, var(--img-overlay) 100%); pointer-events: none; transition: opacity 0.2s ease; }}
+        .card:hover .image-container::after {{ opacity: 0; }}
+        .image-container img {{ max-height: 100%; max-width: 100%; object-fit: contain; filter: var(--img-filter); mix-blend-mode: var(--img-blend); border-radius: 14px; transition: filter 0.2s ease, mix-blend-mode 0.2s ease; }}
+        .card:hover .image-container img {{ mix-blend-mode: var(--img-blend-hover); }}
         .content {{ padding: 20px; flex-grow: 1; display: flex; flex-direction: column; }}
         .category-label {{ font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }}
         .title {{ font-size: 16px; font-weight: 600; margin-bottom: 8px; color: var(--text); line-height: 1.4; }}
@@ -1172,10 +1177,13 @@ def generate_html(all_products):
         .attribution a {{ color: var(--accent); text-decoration: none; font-weight: 600; }}
         .attribution a:hover {{ text-decoration: underline; }}
         .issue-stats {{
-            position: absolute;
-            top: 20px;
-            left: 20px;
-            max-width: 420px;
+            max-width: 1200px;
+            margin: 28px auto 0;
+            padding: 14px 16px;
+            border: 1px solid var(--panel-border);
+            border-radius: 14px;
+            background: linear-gradient(180deg, var(--card-grad-1), var(--card-grad-2));
+            box-shadow: 0 8px 26px rgba(0,0,0,0.12);
             font-size: 12px;
             line-height: 1.35;
             color: var(--muted);
@@ -1184,7 +1192,6 @@ def generate_html(all_products):
     </style>
 </head>
 <body>
-    {issue_stats_html}
     <div class="attribution">
         made by <a href="https://gelosi.github.io" target="_blank">gelosi</a><br>
         get notifications via <a href="https://refurb-tracker.com" target="_blank">refurb-tracker</a>
@@ -1230,6 +1237,7 @@ def generate_html(all_products):
     </div>
 
     <div id="grid" class="grid"></div>
+    {issue_stats_html}
 
     <script>
         const products = {json_data};
