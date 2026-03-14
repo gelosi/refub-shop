@@ -914,7 +914,7 @@ def generate_html(all_products):
 
     issue_stats_html = ""
     if issue_lines:
-        issue_stats_html = '<div class="issue-stats"><strong>Issues</strong><br>' + '<br>'.join(escape(line) for line in issue_lines) + '</div>'
+        issue_stats_html = '<div class="issue-stats">Issues: ' + ' · '.join(escape(line) for line in issue_lines) + '</div>'
 
     json_data = json.dumps(all_products)
     
@@ -930,6 +930,7 @@ def generate_html(all_products):
             --bg-1: #ffffff;
             --panel: #ffffff;
             --panel-border: #d6ddef;
+            --frame-accent: #c5d0e5;
             --text: #111827;
             --muted: #5a667f;
             --accent: #2563eb;
@@ -946,45 +947,47 @@ def generate_html(all_products):
             --bg-glow-2: rgba(133, 182, 255, 0.22);
         }}
         :root[data-theme='dark'] {{
-            --bg-0: #090c14;
-            --bg-1: #121829;
-            --panel: #171f33;
-            --panel-border: #2a3554;
-            --text: #ecf1ff;
-            --muted: #95a3c8;
-            --accent: #8ec5ff;
-            --price: #b9f8d3;
-            --card-grad-1: #1f2a45;
-            --card-grad-2: #141c2f;
-            --img-grad-1: #2a3554;
-            --img-grad-2: #141c2f;
+            --bg-0: #0e100f;
+            --bg-1: #181b19;
+            --panel: #1d211f;
+            --panel-border: #303934;
+            --frame-accent: #567160;
+            --text: #edf1ed;
+            --muted: #a2aca5;
+            --accent: #9fc6aa;
+            --price: #bff0cb;
+            --card-grad-1: #252927;
+            --card-grad-2: #181b1a;
+            --img-grad-1: #2d3430;
+            --img-grad-2: #181b1a;
             --img-shadow: rgba(0,0,0,0.45);
             --img-blend: multiply;
             --img-filter: drop-shadow(0 14px 18px var(--img-shadow)) contrast(1.03);
-            --img-overlay: rgba(9,12,20,0.20);
-            --bg-glow-1: rgba(38, 53, 91, 0.60);
-            --bg-glow-2: rgba(30, 65, 120, 0.45);
+            --img-overlay: rgba(14,16,15,0.22);
+            --bg-glow-1: rgba(92, 98, 94, 0.34);
+            --bg-glow-2: rgba(52, 78, 63, 0.28);
         }}
         @media (prefers-color-scheme: dark) {{
             :root:not([data-theme='light']) {{
-                --bg-0: #090c14;
-                --bg-1: #121829;
-                --panel: #171f33;
-                --panel-border: #2a3554;
-                --text: #ecf1ff;
-                --muted: #95a3c8;
-                --accent: #8ec5ff;
-                --price: #b9f8d3;
-                --card-grad-1: #1f2a45;
-                --card-grad-2: #141c2f;
-                --img-grad-1: #2a3554;
-                --img-grad-2: #141c2f;
+                --bg-0: #0e100f;
+                --bg-1: #181b19;
+                --panel: #1d211f;
+                --panel-border: #303934;
+                --frame-accent: #567160;
+                --text: #edf1ed;
+                --muted: #a2aca5;
+                --accent: #9fc6aa;
+                --price: #bff0cb;
+                --card-grad-1: #252927;
+                --card-grad-2: #181b1a;
+                --img-grad-1: #2d3430;
+                --img-grad-2: #181b1a;
                 --img-shadow: rgba(0,0,0,0.45);
                 --img-blend: multiply;
                 --img-filter: drop-shadow(0 14px 18px var(--img-shadow)) contrast(1.03);
-                --img-overlay: rgba(9,12,20,0.20);
-                --bg-glow-1: rgba(38, 53, 91, 0.60);
-                --bg-glow-2: rgba(30, 65, 120, 0.45);
+                --img-overlay: rgba(14,16,15,0.22);
+                --bg-glow-1: rgba(92, 98, 94, 0.34);
+                --bg-glow-2: rgba(52, 78, 63, 0.28);
             }}
         }}
         body {{
@@ -1001,7 +1004,7 @@ def generate_html(all_products):
         select {{ padding: 8px; border-radius: 8px; border: 1px solid var(--panel-border); font-size: 14px; background: var(--panel); color: var(--text); }}
         .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; max-width: 1200px; margin: 0 auto; }}
         .card {{ background: linear-gradient(180deg, var(--card-grad-1), var(--card-grad-2)); border: 1px solid var(--panel-border); border-radius: 18px; overflow: hidden; box-shadow: 0 8px 26px rgba(0,0,0,0.18); transition: transform 0.2s, border-color 0.2s; display: flex; flex-direction: column; }}
-        .card:hover {{ transform: translateY(-4px); border-color: #3a4d79; }}
+        .card:hover {{ transform: translateY(-4px); border-color: var(--frame-accent); }}
         .image-container {{ height: 200px; display: flex; align-items: center; justify-content: center; padding: 20px; background: radial-gradient(circle at 50% 30%, var(--img-grad-1), var(--img-grad-2) 75%); position: relative; overflow: hidden; }}
         .image-container::after {{ content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 50% 50%, transparent 40%, var(--img-overlay) 100%); pointer-events: none; }}
         .image-container img {{ max-height: 100%; max-width: 100%; object-fit: contain; filter: var(--img-filter); mix-blend-mode: var(--img-blend); border-radius: 14px; }}
@@ -1016,19 +1019,13 @@ def generate_html(all_products):
         .attribution a {{ color: var(--accent); text-decoration: none; font-weight: 600; }}
         .attribution a:hover {{ text-decoration: underline; }}
         .issue-stats {{
-            position: fixed;
+            position: absolute;
             top: 20px;
             left: 20px;
-            z-index: 10;
-            max-width: 260px;
+            max-width: 420px;
             font-size: 12px;
             line-height: 1.35;
-            color: var(--text);
-            background: var(--panel);
-            border: 1px solid var(--panel-border);
-            border-radius: 10px;
-            padding: 8px 10px;
-            box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+            color: var(--muted);
         }}
         a {{ text-decoration: none; color: inherit; }}
     </style>
