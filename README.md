@@ -101,6 +101,18 @@ When post-scrape validation exceeds the configured missing-RAM error-rate thresh
 5. If the candidate repair is helpful, the workflow commits `scraper/scraper.py` plus regenerated `index.html` to `automation/parser-repair` and opens or updates a PR.
 6. If the repair is not helpful, if `GEMINI_API_KEY` is missing, or if Gemini quota is exhausted, the repair workflow fails without affecting the scrape workflow and posts the failure reason to the issue.
 
+### Local Repair Helper
+To test the same repair loop locally with Gemini CLI:
+
+1. Install Gemini CLI and export `GEMINI_API_KEY`.
+2. Start from a clean working tree.
+3. Run `scripts/test_parser_repair_local.sh`.
+
+Optional flags:
+- `--model gemini-2.5-flash`
+- `--gemini-bin /path/to/gemini`
+- `--allow-dirty` if you intentionally want to bypass the clean-tree guard
+
 ## ⚠️ Disclaimer
 This tool is not affiliated with, endorsed by, or connected to Apple Inc. It is a hobbyist project ("vibecoded") provided for educational and personal tracking purposes only.
 
