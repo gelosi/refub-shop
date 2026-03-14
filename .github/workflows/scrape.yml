@@ -13,6 +13,8 @@ jobs:
   scrape-and-gate:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      HAS_COPILOT_ASSIGNMENT_TOKEN: ${{ secrets.COPILOT_ASSIGNMENT_TOKEN != '' }}
 
     steps:
       - name: Check out repository
@@ -72,7 +74,7 @@ jobs:
           git push
 
       - name: Close open regression issue
-        if: steps.gate.outputs.should_commit == 'true' && secrets.COPILOT_ASSIGNMENT_TOKEN != ''
+        if: steps.gate.outputs.should_commit == 'true' && env.HAS_COPILOT_ASSIGNMENT_TOKEN == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.COPILOT_ASSIGNMENT_TOKEN }}
@@ -106,13 +108,13 @@ jobs:
             });
 
       - name: Require Copilot assignment token for regressions
-        if: steps.gate.outputs.should_commit != 'true' && success() && secrets.COPILOT_ASSIGNMENT_TOKEN == ''
+        if: steps.gate.outputs.should_commit != 'true' && success() && env.HAS_COPILOT_ASSIGNMENT_TOKEN != 'true'
         run: |
           echo "Regression detected but COPILOT_ASSIGNMENT_TOKEN is not configured." >&2
           exit 1
 
       - name: Open or update Copilot issue
-        if: steps.gate.outputs.should_commit != 'true' && success() && secrets.COPILOT_ASSIGNMENT_TOKEN != ''
+        if: steps.gate.outputs.should_commit != 'true' && success() && env.HAS_COPILOT_ASSIGNMENT_TOKEN == 'true'
         uses: actions/github-script@v7
         env:
           METRICS_SUMMARY_PATH: metrics-summary.md
