@@ -3,45 +3,65 @@ name: Parser Repair
 on:
   workflow_dispatch:
     inputs:
-      source_run_id:
+      source_validation_run_id:
+        description: Source validation workflow run ID
+        required: false
+        type: string
+      source_validation_run_url:
+        description: Source validation workflow run URL
+        required: false
+        type: string
+      source_scrape_run_id:
         description: Source daily scrape run ID
         required: false
         type: string
-      source_run_url:
+      source_scrape_run_url:
         description: Source daily scrape run URL
         required: false
         type: string
       total_products:
-        description: Total products from the triggering scrape
+        description: Total products from the triggering validation
         required: false
         type: string
       missing_ram:
-        description: Missing RAM count from the triggering scrape
+        description: Missing RAM count from the triggering validation
+        required: false
+        type: string
+      missing_ram_pct:
+        description: Missing RAM percentage from the triggering validation
         required: false
         type: string
       missing_ssd:
-        description: Missing SSD count from the triggering scrape
+        description: Missing SSD count from the triggering validation
         required: false
         type: string
       implausible_ram:
-        description: Implausible RAM count from the triggering scrape
+        description: Implausible RAM count from the triggering validation
         required: false
         type: string
 
 permissions:
-  contents: read
+  contents: write
   issues: write
+  pull-requests: write
+
+concurrency:
+  group: parser-repair-main
+  cancel-in-progress: true
 
 jobs:
-  open-parser-repair:
+  parser-repair:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 180
     env:
-      HAS_COPILOT_ASSIGNMENT_TOKEN: ${{ secrets.COPILOT_ASSIGNMENT_TOKEN != '' }}
+      GEMINI_MODEL: gemini-2.5-flash
+      REPAIR_BRANCH: automation/parser-repair
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -55,10 +75,13 @@ jobs:
         id: issue
         uses: actions/github-script@v7
         env:
-          SOURCE_RUN_URL: ${{ inputs.source_run_url }}
-          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_VALIDATION_RUN_URL: ${{ inputs.source_validation_run_url }}
+          SOURCE_VALIDATION_RUN_ID: ${{ inputs.source_validation_run_id }}
+          SOURCE_SCRAPE_RUN_URL: ${{ inputs.source_scrape_run_url }}
+          SOURCE_SCRAPE_RUN_ID: ${{ inputs.source_scrape_run_id }}
           SOURCE_TOTAL_PRODUCTS: ${{ inputs.total_products }}
           SOURCE_MISSING_RAM: ${{ inputs.missing_ram }}
+          SOURCE_MISSING_RAM_PCT: ${{ inputs.missing_ram_pct }}
           SOURCE_MISSING_SSD: ${{ inputs.missing_ssd }}
           SOURCE_IMPLAUSIBLE_RAM: ${{ inputs.implausible_ram }}
         with:
@@ -69,13 +92,11 @@ jobs:
             const repo = context.repo.repo;
             const title = 'Daily scrape parser repair';
             const current = JSON.parse(fs.readFileSync('current-metrics.json', 'utf8'));
-            const sourceRunUrl = process.env.SOURCE_RUN_URL || '';
-            const sourceRunId = process.env.SOURCE_RUN_ID || '';
 
             const labels = [
               { name: 'automation', color: '0e8a16', description: 'Created by repository automation.' },
               { name: 'parser-fix', color: 'b60205', description: 'Parser work needed after a scrape run.' },
-              { name: 'copilot', color: '1d76db', description: 'Intended for GitHub Copilot coding agent.' },
+              { name: 'gemini', color: '1d76db', description: 'Uses Gemini to attempt parser repair.' },
             ];
 
             for (const label of labels) {
@@ -97,26 +118,24 @@ jobs:
 
             const body = [
               '## Trigger',
-              sourceRunUrl ? `- Source scrape run: ${sourceRunUrl}` : '- Source scrape run: unavailable',
-              sourceRunId ? `- Source run ID: ${sourceRunId}` : null,
-              process.env.SOURCE_TOTAL_PRODUCTS ? `- Trigger totals: ${process.env.SOURCE_TOTAL_PRODUCTS} total, ${process.env.SOURCE_MISSING_RAM} missing RAM, ${process.env.SOURCE_MISSING_SSD} missing SSD, ${process.env.SOURCE_IMPLAUSIBLE_RAM} implausible RAM` : null,
+              process.env.SOURCE_VALIDATION_RUN_URL ? `- Validation run: ${process.env.SOURCE_VALIDATION_RUN_URL}` : '- Validation run: unavailable',
+              process.env.SOURCE_VALIDATION_RUN_ID ? `- Validation run ID: ${process.env.SOURCE_VALIDATION_RUN_ID}` : null,
+              process.env.SOURCE_SCRAPE_RUN_URL ? `- Scrape run: ${process.env.SOURCE_SCRAPE_RUN_URL}` : '- Scrape run: unavailable',
+              process.env.SOURCE_SCRAPE_RUN_ID ? `- Scrape run ID: ${process.env.SOURCE_SCRAPE_RUN_ID}` : null,
+              process.env.SOURCE_TOTAL_PRODUCTS ? `- Trigger totals: ${process.env.SOURCE_TOTAL_PRODUCTS} total, ${process.env.SOURCE_MISSING_RAM} missing RAM (${process.env.SOURCE_MISSING_RAM_PCT || 'n/a'}%), ${process.env.SOURCE_MISSING_SSD} missing SSD, ${process.env.SOURCE_IMPLAUSIBLE_RAM} implausible RAM` : null,
               '',
               '## Current Metrics',
               `- Total products: ${current.total_products}`,
-              `- Missing RAM (mac only): ${current.missing_ram}`,
-              `- Missing SSD (mac/ipad/iphone/appletv): ${current.missing_ssd}`,
+              `- Missing RAM (mac only): ${current.missing_ram} (${current.missing_ram_pct}%)`,
+              `- Missing SSD (mac/ipad/iphone/appletv): ${current.missing_ssd} (${current.missing_ssd_pct}%)`,
               `- Implausible RAM (>512 GB): ${current.implausible_ram}`,
               '',
-              '## Task',
-              '- Read `AGENTS.md` and `.github/copilot-instructions.md` before editing.',
-              '- Run `./run_scraper.sh` or a narrower country scope to reproduce.',
-              '- Focus on parser or enrichment fixes only.',
-              '- Do not skip work just because screen data is absent on desktop Macs.',
-              '- Prefer technical spec sections already present in page HTML over extra reloads.',
-              '- Regenerate `index.html` after scraper changes.',
-              '- Keep changes only if Missing RAM and/or Missing SSD improve, Total Products does not decrease, and implausible RAM values do not increase.',
-              '- Run `python3 -m py_compile scraper/scraper.py scraper/verify_data.py scripts/metrics_gate.py`.',
-              '- Run `python3 scraper/verify_data.py` and include exact totals in the result.',
+              '## Automated Repair Plan',
+              '- Read `AGENTS.md` and `.github/parser-repair-instructions.md`.',
+              '- Use Gemini to propose a narrow parser repair in `scraper/scraper.py`.',
+              '- Regenerate `index.html` with `./run_scraper.sh`.',
+              '- Keep the change only when the verifier metrics improve without regressions.',
+              '- Push the repair to an automation branch and open or update a PR when successful.',
             ].filter(Boolean).join('\n');
 
             const issues = await github.paginate(github.rest.issues.listForRepo, {
@@ -124,7 +143,6 @@ jobs:
               repo,
               state: 'open',
               per_page: 100,
-              labels: labels.map((label) => label.name).join(','),
             });
             const existing = issues.find((item) => item.title === title);
 
@@ -143,7 +161,6 @@ jobs:
                 labels: labels.map((label) => label.name),
               });
               core.setOutput('issue_number', String(existing.number));
-              core.info(`Updated issue #${existing.number}.`);
               return;
             }
 
@@ -155,21 +172,184 @@ jobs:
               labels: labels.map((label) => label.name),
             });
             core.setOutput('issue_number', String(created.data.number));
-            core.info(`Created issue #${created.data.number}.`);
 
-      - name: Assign Copilot agent
-        if: env.HAS_COPILOT_ASSIGNMENT_TOKEN == 'true'
+      - name: Run automated parser repair
+        id: repair
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python3 scripts/parser_repair.py \
+            --model "$GEMINI_MODEL" \
+            --comment-out parser-repair-comment.md \
+            --result-json-out parser-repair-result.json \
+            --source-validation-run-url "${{ inputs.source_validation_run_url }}" \
+            --source-scrape-run-url "${{ inputs.source_scrape_run_url }}"
+
+      - name: Upload parser repair artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parser-repair-${{ github.run_id }}
+          path: |
+            current-metrics.json
+            parser-repair-comment.md
+            parser-repair-result.json
+            scraper/scraper.py
+            index.html
+          if-no-files-found: ignore
+
+      - name: Comment repair failure
+        if: steps.repair.outcome != 'success'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.COPILOT_ASSIGNMENT_TOKEN }}
+          github-token: ${{ github.token }}
           script: |
-            await github.rest.issues.addAssignees({
+            const fs = require('fs');
+            const body = fs.readFileSync('parser-repair-comment.md', 'utf8').trim();
+            await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: Number('${{ steps.issue.outputs.issue_number }}'),
-              assignees: ['copilot-swe-agent'],
+              body,
             });
 
-      - name: Skip Copilot assignment when token is unavailable
-        if: env.HAS_COPILOT_ASSIGNMENT_TOKEN != 'true'
-        run: echo "COPILOT_ASSIGNMENT_TOKEN is not configured. Skipping Copilot assignment."
+      - name: Fail repair workflow when repair attempt failed
+        if: steps.repair.outcome != 'success'
+        run: exit 1
+
+      - name: Extract repair metadata
+        id: repair_meta
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(Path("parser-repair-result.json").read_text(encoding="utf-8"))
+          before = result["before_metrics"]
+          after = result["after_metrics"]
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
+              handle.write(f"commit_message={result['commit_message']}\n")
+              handle.write(f"before_missing_ram={before['missing_ram']}\n")
+              handle.write(f"after_missing_ram={after['missing_ram']}\n")
+              handle.write(f"before_missing_ssd={before['missing_ssd']}\n")
+              handle.write(f"after_missing_ssd={after['missing_ssd']}\n")
+              handle.write(f"before_total_products={before['total_products']}\n")
+              handle.write(f"after_total_products={after['total_products']}\n")
+          PY
+
+      - name: Create repair PR body
+        env:
+          SOURCE_VALIDATION_RUN_URL: ${{ inputs.source_validation_run_url }}
+          SOURCE_SCRAPE_RUN_URL: ${{ inputs.source_scrape_run_url }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(Path("parser-repair-result.json").read_text(encoding="utf-8"))
+          before = result["before_metrics"]
+          after = result["after_metrics"]
+          summary = result.get("summary", "Automated parser repair")
+          validation_url = os.environ.get("SOURCE_VALIDATION_RUN_URL") or "unavailable"
+          scrape_url = os.environ.get("SOURCE_SCRAPE_RUN_URL") or "unavailable"
+
+          body = f"""## Automated Parser Repair
+
+          {summary}
+
+          ## Source Runs
+          - Validation: {validation_url}
+          - Scrape: {scrape_url}
+
+          ## Metrics
+          | Metric | Before | After |
+          | --- | ---: | ---: |
+          | Total products | {before['total_products']} | {after['total_products']} |
+          | Missing RAM (mac only) | {before['missing_ram']} | {after['missing_ram']} |
+          | Missing SSD (mac/ipad/iphone/appletv) | {before['missing_ssd']} | {after['missing_ssd']} |
+          | Implausible RAM (>512 GB) | {before['implausible_ram']} | {after['implausible_ram']} |
+          """
+          Path("parser-repair-pr-body.md").write_text(body.strip() + "\n", encoding="utf-8")
+          PY
+
+      - name: Commit repair branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$REPAIR_BRANCH"
+          git add scraper/scraper.py index.html
+          git commit -m "${{ steps.repair_meta.outputs.commit_message }}"
+
+      - name: Push repair branch
+        run: git push --force-with-lease --set-upstream origin "$REPAIR_BRANCH"
+
+      - name: Open or update repair pull request
+        id: pr
+        uses: actions/github-script@v7
+        env:
+          REPAIR_BRANCH: ${{ env.REPAIR_BRANCH }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const body = fs.readFileSync('parser-repair-pr-body.md', 'utf8');
+            const title = '${{ steps.repair_meta.outputs.commit_message }}';
+            const head = `${owner}:${process.env.REPAIR_BRANCH}`;
+            const base = context.payload.repository.default_branch;
+
+            const pulls = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
+              state: 'open',
+              head,
+              base,
+              per_page: 100,
+            });
+            const existing = pulls[0];
+
+            if (existing) {
+              const updated = await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: existing.number,
+                title,
+                body,
+              });
+              core.setOutput('pr_number', String(updated.data.number));
+              core.setOutput('pr_url', updated.data.html_url);
+              return;
+            }
+
+            const created = await github.rest.pulls.create({
+              owner,
+              repo,
+              title,
+              head: process.env.REPAIR_BRANCH,
+              base,
+              body,
+            });
+            core.setOutput('pr_number', String(created.data.number));
+            core.setOutput('pr_url', created.data.html_url);
+
+      - name: Comment repair success
+        env:
+          PR_URL: ${{ steps.pr.outputs.pr_url }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const baseComment = fs.readFileSync('parser-repair-comment.md', 'utf8').trim();
+            const body = `${baseComment}\n\n## Pull Request\n- ${process.env.PR_URL}`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number('${{ steps.issue.outputs.issue_number }}'),
+              body,
+            });

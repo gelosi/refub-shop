@@ -4,12 +4,18 @@ on:
   pull_request:
     branches:
       - main
+  workflow_run:
+    workflows:
+      - Daily Scrape
+    types:
+      - completed
 
 permissions:
   contents: read
 
 jobs:
   verify-generated-data:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -25,7 +31,7 @@ jobs:
           python-version: "3.12"
 
       - name: Validate Python syntax
-        run: python3 -m py_compile scraper/scraper.py scraper/verify_data.py scripts/metrics_gate.py
+        run: python3 -m py_compile scraper/scraper.py scraper/verify_data.py scripts/metrics_gate.py scripts/parser_repair.py
 
       - name: Fetch base branch
         run: git fetch origin "${{ github.base_ref }}" --depth=1
@@ -67,3 +73,112 @@ jobs:
             echo "Scraper or index changes must improve Missing RAM, Missing SSD, or Total Products." >&2
             exit 1
           fi
+
+  evaluate-post-scrape:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+    env:
+      MISSING_RAM_TRIGGER_RATE_THRESHOLD: "0.0"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Capture current metrics
+        run: python3 scraper/verify_data.py --json > current-metrics.json
+
+      - name: Extract validation decision
+        id: metrics
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          metrics = json.loads(Path("current-metrics.json").read_text(encoding="utf-8"))
+          threshold = float(os.environ["MISSING_RAM_TRIGGER_RATE_THRESHOLD"])
+          missing_ram_pct = float(metrics["missing_ram_pct"])
+          parser_fix_required = missing_ram_pct > threshold
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
+              handle.write(f"total_products={metrics['total_products']}\n")
+              handle.write(f"missing_ram={metrics['missing_ram']}\n")
+              handle.write(f"missing_ram_pct={missing_ram_pct}\n")
+              handle.write(f"missing_ssd={metrics['missing_ssd']}\n")
+              handle.write(f"implausible_ram={metrics['implausible_ram']}\n")
+              handle.write(f"parser_fix_required={'true' if parser_fix_required else 'false'}\n")
+          PY
+
+      - name: Close open parser repair issue
+        if: steps.metrics.outputs.parser_fix_required != 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const title = 'Daily scrape parser repair';
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const issue = issues.find((item) => item.title === title);
+            if (!issue) {
+              core.info('No open parser repair issue to close.');
+              return;
+            }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: issue.number,
+              body: 'Post-scrape validation no longer exceeds the configured missing-RAM error-rate threshold. Closing this parser repair issue.',
+            });
+            await github.rest.issues.update({
+              owner,
+              repo,
+              issue_number: issue.number,
+              state: 'closed',
+            });
+
+      - name: Dispatch parser repair workflow
+        if: steps.metrics.outputs.parser_fix_required == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const validationRunUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            await github.rest.actions.createWorkflowDispatch({
+              owner,
+              repo,
+              workflow_id: 'parser-fix.yml',
+              ref: context.payload.repository.default_branch,
+              inputs: {
+                source_validation_run_id: String(context.runId),
+                source_validation_run_url: validationRunUrl,
+                source_scrape_run_id: String(context.payload.workflow_run.id),
+                source_scrape_run_url: context.payload.workflow_run.html_url,
+                total_products: '${{ steps.metrics.outputs.total_products }}',
+                missing_ram: '${{ steps.metrics.outputs.missing_ram }}',
+                missing_ram_pct: '${{ steps.metrics.outputs.missing_ram_pct }}',
+                missing_ssd: '${{ steps.metrics.outputs.missing_ssd }}',
+                implausible_ram: '${{ steps.metrics.outputs.implausible_ram }}',
+              },
+            });
+            core.info('Dispatched parser-fix workflow from post-scrape validation.');

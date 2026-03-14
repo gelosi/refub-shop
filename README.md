@@ -62,36 +62,44 @@ The scraper behavior is defined in `scraper/scraper.py`. You can adjust:
 ## 🤖 GitHub Action
 A `.github/workflows/scrape.yml` file is included to run the scraper daily (at 08:00 UTC) and commit the updated `index.html` back to the repository.
 
-## 🤖 Automated Copilot Repair Loop
-This repository now includes a gated automation flow for GitHub Actions plus GitHub Copilot coding agent:
+## 🤖 Automated Parser Repair Loop
+This repository now includes a three-stage automation flow for GitHub Actions plus Gemini-based parser repair:
 
 - `.github/workflows/scrape.yml`
   - runs the daily scrape
-  - captures verifier metrics before and after the run
-  - commits `index.html` only when `Total Products` does not decrease, missing RAM/SSD do not regress, and implausible RAM values do not regress
-  - opens or updates a Copilot-assigned issue when the latest scrape regresses
+  - captures verifier metrics before and after the run for artifacts
+  - commits the refreshed `index.html`
 - `.github/workflows/validate-generated-data.yml`
   - validates pull requests against the current `main` branch metrics
   - requires regenerated `index.html` when scraper code changes
   - blocks scraper/index PRs that do not produce a measurable improvement
-- `.github/workflows/copilot-setup-steps.yml`
-  - bootstraps Python dependencies and Playwright for GitHub Copilot coding agent
+  - also runs after `Daily Scrape` finishes on `main`
+  - checks the configured missing-RAM error-rate threshold
+  - dispatches parser repair only when the threshold is exceeded
+- `.github/workflows/parser-fix.yml`
+  - opens or updates a parser repair issue
+  - uses Gemini to propose a narrow edit to `scraper/scraper.py`
+  - reruns `./run_scraper.sh`, validates the before/after verifier totals, and rejects non-helpful repairs
+  - pushes successful repairs to `automation/parser-repair` and opens or updates a PR
+  - fails with a clear message when `GEMINI_API_KEY` is missing or Gemini quota/rate limits block the run
 
 ### One-Time GitHub Setup
 The repository files alone are not enough. You still need to configure GitHub:
 
-1. Enable GitHub Copilot coding agent for the repository.
-2. Add a repository secret named `COPILOT_ASSIGNMENT_TOKEN`.
-3. Use a token that can create issues and assign them in this repository.
+1. Add a repository secret named `GEMINI_API_KEY`.
+2. Optionally adjust `MISSING_RAM_TRIGGER_RATE_THRESHOLD` in `.github/workflows/validate-generated-data.yml`.
+3. Ensure the default `GITHUB_TOKEN` can create issues, push branches, and open pull requests in this repository.
 4. Optionally protect `main` and require the `Validate Generated Data` workflow before merge.
 
-### Copilot Issue Flow
-When the scheduled scrape regresses:
+### Parser Repair Flow
+When post-scrape validation exceeds the configured missing-RAM error-rate threshold:
 
-1. The workflow does not commit the new `index.html`.
-2. It creates or updates a `Daily scrape regression` issue.
-3. The issue is assigned to Copilot and includes the baseline and latest verifier totals.
-4. Copilot is expected to open a PR with both the scraper fix and regenerated `index.html`.
+1. `Daily Scrape` finishes independently and commits the latest `index.html`.
+2. `Validate Generated Data` runs afterward and checks the current error rate on `main`.
+3. If the threshold is exceeded, it dispatches `Parser Repair`.
+4. `Parser Repair` creates or updates the `Daily scrape parser repair` issue, asks Gemini for a bounded parser fix, reruns the scraper, and compares before/after verifier totals.
+5. If the candidate repair is helpful, the workflow commits `scraper/scraper.py` plus regenerated `index.html` to `automation/parser-repair` and opens or updates a PR.
+6. If the repair is not helpful, if `GEMINI_API_KEY` is missing, or if Gemini quota is exhausted, the repair workflow fails without affecting the scrape workflow and posts the failure reason to the issue.
 
 ## ⚠️ Disclaimer
 This tool is not affiliated with, endorsed by, or connected to Apple Inc. It is a hobbyist project ("vibecoded") provided for educational and personal tracking purposes only.
