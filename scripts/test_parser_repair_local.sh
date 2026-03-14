@@ -9,10 +9,11 @@ MODEL="${GEMINI_MODEL:-gemini-2.5-flash}"
 GEMINI_BIN="${GEMINI_BIN:-gemini}"
 ALLOW_DIRTY="false"
 FALLBACK_MODELS=()
+ISOLATE_GEMINI_HOME="true"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/test_parser_repair_local.sh [--model MODEL] [--fallback-model MODEL] [--gemini-bin PATH] [--allow-dirty]
+Usage: scripts/test_parser_repair_local.sh [--model MODEL] [--fallback-model MODEL] [--gemini-bin PATH] [--allow-dirty] [--use-existing-gemini-home]
 
 Runs the local Gemini CLI parser repair loop:
 1. Captures baseline verifier metrics
@@ -24,6 +25,11 @@ Environment:
   GEMINI_API_KEY   Required Gemini API key
   GEMINI_MODEL     Optional model override (default: gemini-2.5-flash)
   GEMINI_BIN       Optional Gemini CLI binary path (default: gemini)
+
+Behavior:
+  By default the script sets GEMINI_CLI_HOME to a temporary directory so Gemini
+  CLI uses GEMINI_API_KEY instead of any cached local login state. Pass
+  --use-existing-gemini-home to reuse your existing Gemini CLI credentials/cache.
 EOF
 }
 
@@ -43,6 +49,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-dirty)
       ALLOW_DIRTY="true"
+      shift
+      ;;
+    --use-existing-gemini-home)
+      ISOLATE_GEMINI_HOME="false"
       shift
       ;;
     -h|--help)
@@ -84,7 +94,9 @@ ERROR_LOG="$WORK_DIR/gemini-error.log"
 PROMPT_FILE="$WORK_DIR/gemini-prompt.txt"
 COMMENT_OUT="$WORK_DIR/parser-repair-comment.md"
 RESULT_JSON="$WORK_DIR/parser-repair-result.json"
+GEMINI_HOME_DIR="$WORK_DIR/gemini-cli-home"
 
+echo "Capturing baseline verifier metrics..."
 python3 scraper/verify_data.py --json > "$BASELINE_JSON"
 python3 scraper/verify_data.py > "$BASELINE_REPORT"
 
@@ -115,13 +127,25 @@ EOF
 
 run_gemini() {
   local model="$1"
+  local -a cmd=(
+    "$GEMINI_BIN"
+    -p "$(cat "$PROMPT_FILE")"
+    --model "$model"
+    --output-format json
+    --yolo
+  )
+
   echo "Running Gemini CLI with model: $model"
-  if "$GEMINI_BIN" \
-    -p "$(cat "$PROMPT_FILE")" \
-    --model "$model" \
-    --output-format json \
-    --yolo \
-    > "$OUTPUT_JSON" 2> "$ERROR_LOG"; then
+  echo "Gemini CLI can be quiet while it works. stderr/progress will be mirrored below."
+
+  rm -f "$ERROR_LOG"
+  if [[ "$ISOLATE_GEMINI_HOME" == "true" ]]; then
+    mkdir -p "$GEMINI_HOME_DIR"
+    echo "Using isolated GEMINI_CLI_HOME: $GEMINI_HOME_DIR"
+    if GEMINI_CLI_HOME="$GEMINI_HOME_DIR" "${cmd[@]}" > "$OUTPUT_JSON" 2> >(tee "$ERROR_LOG" >&2); then
+      return 0
+    fi
+  elif "${cmd[@]}" > "$OUTPUT_JSON" 2> >(tee "$ERROR_LOG" >&2); then
     return 0
   fi
 
@@ -166,6 +190,7 @@ if ! run_gemini "$MODEL"; then
   fi
 fi
 
+echo "Gemini CLI finished. Validating returned payload..."
 python3 - <<'PY' "$OUTPUT_JSON" "$SUMMARY_FILE"
 import json
 import sys
@@ -181,10 +206,14 @@ if not response:
 Path(sys.argv[2]).write_text(response + "\n", encoding="utf-8")
 PY
 
+echo "Running syntax checks..."
 python3 -m py_compile scraper/scraper.py scraper/verify_data.py scripts/metrics_gate.py scripts/parser_repair.py
+echo "Regenerating scraper output..."
 ./run_scraper.sh
+echo "Capturing repaired metrics..."
 python3 scraper/verify_data.py --json > "$REPAIRED_JSON"
 
+echo "Validating repair candidate..."
 python3 scripts/parser_repair.py \
   --before-json "$BASELINE_JSON" \
   --after-json "$REPAIRED_JSON" \
@@ -194,6 +223,11 @@ python3 scripts/parser_repair.py \
 
 echo "Local parser repair validation passed."
 echo "Model used: $MODEL"
+if [[ "$ISOLATE_GEMINI_HOME" == "true" ]]; then
+  echo "Gemini CLI auth mode: isolated GEMINI_API_KEY via GEMINI_CLI_HOME"
+else
+  echo "Gemini CLI auth mode: existing Gemini CLI home/cached auth"
+fi
 echo "Summary: $(cat "$SUMMARY_FILE")"
 echo "Comment report: $COMMENT_OUT"
 echo "Result JSON: $RESULT_JSON"
