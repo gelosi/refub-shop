@@ -305,7 +305,7 @@ def first_valid_ram_value(text):
 
 
 def first_valid_storage_value(text, category, device_type):
-    ssd_keywords = r'(?:ssd(?:\s*-\s*opslag)?|flash\s*storage|massenspeicher|stockage|opslag|almacenamiento|archiviazione|lagring|úložiště|pamięci\s*masowej|storage|speicherplatz)'
+    ssd_keywords = r'(?:ssd(?:\s*-\s*opslag)?|flash\s*storage|massenspeicher|stockage|opslag|almacenamiento|archiviazione|lagring|úložiště|pamięci\s*masowej|pamięć\s*masowa|pamięci\s*ssd|storage|speicherplatz)'
     ssd_patterns = [
         rf'{ssd_keywords}[\s,;:()/-]*(?:von|de|del|di|z|da|van)?\s*(\d+){NUMBER_UNIT_SEP}{STORAGE_UNIT_PATTERN}',
         rf'(\d+){NUMBER_UNIT_SEP}{STORAGE_UNIT_PATTERN}\b[\s,;:()/-]*{ssd_keywords}',
@@ -321,7 +321,7 @@ def first_valid_storage_value(text, category, device_type):
     is_mac = category == 'mac' or device_type in MAC_DEVICE_TYPES
     if not candidates and is_mac:
         storage_capacity_pattern = (
-            rf'(?:storage|opslag|stockage|massenspeicher|speicherplatz|almacenamiento|archiviazione|pamięci\s*masowej|pojemno(?:ść|sci)|capacity|capacità|capaciteit|kapazität|capacité)'
+            rf'(?:storage|opslag|stockage|massenspeicher|speicherplatz|almacenamiento|archiviazione|pamięci\s*masowej|pamięć\s*masowa|pojemno(?:ść|sci)|capacity|capacità|capaciteit|kapazität|capacité)'
             rf'[\s,;:()/-]*(?:von|de|del|di|z|da|van|o)?[\s,;:()/-]*(\d+){NUMBER_UNIT_SEP}{STORAGE_UNIT_PATTERN}'
         )
         for match in re.finditer(storage_capacity_pattern, text):
