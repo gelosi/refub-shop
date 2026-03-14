@@ -101,6 +101,7 @@ ACCESSORY_TYPES = {'Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'HomePod', '
 MAC_DEVICE_TYPES = {'Mac', 'MacBook Air', 'MacBook Pro', 'Mac mini', 'iMac', 'Mac Studio', 'Mac Pro'}
 MACBOOK_TYPES = {'MacBook Air', 'MacBook Pro'}
 SCREEN_BUCKET_DEVICE_TYPES = {'MacBook Air', 'MacBook Pro', 'iMac', 'iPad', 'iPad Pro', 'iPad Air', 'iPad mini'}
+GENERIC_DEVICE_TYPES = {'Mac', 'iPad', 'iPhone', 'Apple Watch', 'Apple TV', 'Accessory'}
 NUMBER_UNIT_SEP = r'\s*(?:-\s*)?'
 FOOTNOTE_SUFFIX = r'(?:[0-9¹²³⁴⁵⁶⁷⁸⁹]+)?'
 RAM_UNIT_PATTERN = rf'(?:gb|go){FOOTNOTE_SUFFIX}(?![a-z])'
@@ -288,9 +289,13 @@ def merge_specs(base, updates, prefer_updates=False):
             merged[key] = update_value
     # Only replace generic type names
     if prefer_updates:
-        if updates.get('device_type') and updates['device_type'] != 'Device':
-            merged['device_type'] = updates['device_type']
-    elif merged.get('device_type') in [None, 'Device', 'Mac', 'iPad', 'iPhone', 'Apple Watch', 'Apple TV', 'Accessory']:
+        update_type = updates.get('device_type')
+        current_type = merged.get('device_type')
+        if update_type and update_type != 'Device':
+            # Keep a specific listing type when detail parsing only falls back to a generic category label.
+            if not (update_type in GENERIC_DEVICE_TYPES and current_type not in GENERIC_DEVICE_TYPES):
+                merged['device_type'] = update_type
+    elif merged.get('device_type') in [None, 'Device', *GENERIC_DEVICE_TYPES]:
         if updates.get('device_type') and updates['device_type'] != 'Device':
             merged['device_type'] = updates['device_type']
     return merged
