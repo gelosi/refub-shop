@@ -177,6 +177,7 @@ CHIP_SECTION_MARKERS = [
     "puce",
     "czip",
 ]
+DISPLAY_CONTENT_HINTS = ('retina', 'pixels', 'pixel', 'ppi', 'nits', 'tone', 'ips', 'oled', 'liquid')
 KNOWN_SSD_OVERRIDES_BY_PRODUCT_CODE = {
     # iMac M4 8-core CPU / 8-core GPU listings where storage is intermittently absent in localized detail text.
     "fwue3ze": 256,
@@ -334,6 +335,101 @@ def first_valid_storage_value(text, category, device_type):
 
     candidates.sort(key=lambda item: item[0])
     return candidates[0][1]
+
+
+def extract_chip_value(text):
+    chip_match = re.search(r'\b(m[1-4])\s*(pro|max|ultra)?\b', text)
+    if chip_match:
+        base_chip = chip_match.group(1).upper()
+        suffix = chip_match.group(2)
+        return f"{base_chip} {suffix.capitalize()}" if suffix else base_chip
+
+    a_chip = re.search(r'\b(a\d{2}[zx]?)\b', text)
+    if a_chip:
+        return a_chip.group(1).upper()
+
+    return None
+
+
+def extract_section_ram_value(text, allow_large_values=False):
+    candidates = []
+    pattern = rf'(?<!\d)(\d{{1,3}}){NUMBER_UNIT_SEP}{RAM_UNIT_PATTERN}'
+    for match in re.finditer(pattern, text):
+        ram_value = sanitize_ram_value(int(match.group(1)))
+        if ram_value is None:
+            continue
+        if not allow_large_values and ram_value > 96:
+            continue
+        candidates.append((match.start(), ram_value))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
+def extract_section_storage_value(text, category='mac'):
+    minimum_value = 128 if category == 'mac' else 32
+    candidates = []
+    pattern = rf'(?<!\d)(\d+){NUMBER_UNIT_SEP}{STORAGE_UNIT_PATTERN}'
+    for match in re.finditer(pattern, text):
+        storage_value = storage_value_in_gb(match.group(1), match.group(2))
+        if not is_reasonable_storage_value(storage_value):
+            continue
+        if storage_value < minimum_value:
+            continue
+        candidates.append((match.start(), storage_value))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
+def extract_section_screen_value(text):
+    screen_patterns = [
+        r'(\d{1,2}[.,]\d)\s*(?:["”]|-?\s*(?:inch|inches|cal(?:i|owy|owe)?|zoll|pouces|pulgadas|pollici))',
+        r'(\d{1,2})\s*(?:["”]|-?\s*(?:inch|inches|cal(?:i|owy|owe)?|zoll|pouces|pulgadas|pollici))',
+    ]
+    for pattern in screen_patterns:
+        match = re.search(pattern, text)
+        if match:
+            return float(match.group(1).replace(',', '.'))
+    return None
+
+
+def classify_tech_specs_section(section, section_index, category='mac'):
+    heading = section['heading']
+    text = normalize_text(" ".join(section['items'])).lower()
+
+    if heading_matches(heading, CHIP_SECTION_MARKERS):
+        return 'chip'
+    if heading_matches(heading, MEMORY_SECTION_MARKERS):
+        return 'memory'
+    if heading_matches(heading, STORAGE_SECTION_MARKERS):
+        return 'storage'
+    if heading_matches(heading, DISPLAY_SECTION_MARKERS):
+        return 'display'
+
+    chip_value = extract_chip_value(text)
+    screen_value = extract_section_screen_value(text)
+    storage_value = extract_section_storage_value(text, category)
+    ram_value = extract_section_ram_value(text, allow_large_values=False)
+
+    if chip_value is not None and section_index <= 1 and ('cpu' in text or 'gpu' in text or section_index == 0):
+        return 'chip'
+    if screen_value is not None and any(hint in text for hint in DISPLAY_CONTENT_HINTS):
+        return 'display'
+    if section_index <= 4 and ('ssd' in text or 'flash' in text):
+        return 'storage'
+    if ram_value is not None and storage_value is None and screen_value is None and section_index <= 4:
+        return 'memory'
+    if storage_value is not None and screen_value is None and section_index <= 4:
+        return 'storage'
+
+    return None
 
 
 def merge_specs(base, updates, prefer_updates=False):
@@ -605,19 +701,27 @@ def extract_detail_specs_from_html(html, category='mac'):
             "Detailed Tech Specs DOM block missing or incomplete; site structure likely changed and the whole page needs re-analysis."
         )
 
-    for section in sections:
+    for section_index, section in enumerate(sections):
         section_text = normalize_text(" ".join([section['heading'], *section['items']]))
-        section_first_text = normalize_text(f"{section_text} {title_text}")
-        parsed_section_specs, _ = parse_specs(section_first_text, category)
+        section_kind = classify_tech_specs_section(section, section_index, category)
 
-        if heading_matches(section['heading'], CHIP_SECTION_MARKERS) and parsed_section_specs.get('chip') is not None:
-            specs['chip'] = parsed_section_specs['chip']
-        elif heading_matches(section['heading'], MEMORY_SECTION_MARKERS) and parsed_section_specs.get('ram') is not None:
-            specs['ram'] = parsed_section_specs['ram']
-        elif heading_matches(section['heading'], STORAGE_SECTION_MARKERS) and parsed_section_specs.get('ssd') is not None:
-            specs['ssd'] = parsed_section_specs['ssd']
-        elif heading_matches(section['heading'], DISPLAY_SECTION_MARKERS) and parsed_section_specs.get('screen') is not None:
-            specs['screen'] = parsed_section_specs['screen']
+        if section_kind == 'chip':
+            chip_value = extract_chip_value(section_text)
+            if chip_value is not None:
+                specs['chip'] = chip_value
+        elif section_kind == 'memory':
+            allow_large_ram = heading_matches(section['heading'], MEMORY_SECTION_MARKERS)
+            ram_value = extract_section_ram_value(section_text, allow_large_values=allow_large_ram)
+            if ram_value is not None:
+                specs['ram'] = ram_value
+        elif section_kind == 'storage':
+            storage_value = extract_section_storage_value(section_text, category)
+            if storage_value is not None:
+                specs['ssd'] = storage_value
+        elif section_kind == 'display':
+            screen_value = extract_section_screen_value(section_text)
+            if screen_value is not None:
+                specs['screen'] = screen_value
 
     detail_text = normalize_text(" ".join(dedupe_text_parts([title_text, *flatten_tech_specs_sections(sections)])))
     fallback_specs, _ = parse_specs(detail_text, category)
