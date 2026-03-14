@@ -177,6 +177,32 @@ CHIP_SECTION_MARKERS = [
     "puce",
     "czip",
 ]
+MEMORY_CONTENT_HINTS = (
+    'unified memory',
+    'memory',
+    'arbeitsspeicher',
+    'mémoire',
+    'geheugen',
+    'memoria',
+    'pamięć operacyjna',
+    'pamięć ram',
+    'pamięci ram',
+)
+STORAGE_CONTENT_HINTS = (
+    'ssd',
+    'flash storage',
+    'storage',
+    'massenspeicher',
+    'stockage',
+    'opslag',
+    'almacenamiento',
+    'archiviazione',
+    'pamięć masowa',
+    'pamięci masowej',
+    'pamięci ssd',
+    'speicherplatz',
+)
+CHIP_CONTENT_HINTS = ('cpu', 'gpu', 'neural engine')
 DISPLAY_CONTENT_HINTS = ('retina', 'pixels', 'pixel', 'ppi', 'nits', 'tone', 'ips', 'oled', 'liquid')
 KNOWN_SSD_OVERRIDES_BY_PRODUCT_CODE = {
     # iMac M4 8-core CPU / 8-core GPU listings where storage is intermittently absent in localized detail text.
@@ -400,9 +426,9 @@ def extract_section_screen_value(text):
     return None
 
 
-def classify_tech_specs_section(section, section_index, category='mac'):
+def classify_tech_specs_section(section, category='mac'):
     heading = section['heading']
-    text = normalize_text(" ".join(section['items'])).lower()
+    text = normalize_text(" ".join([heading, *section['items']])).lower()
 
     if heading_matches(heading, CHIP_SECTION_MARKERS):
         return 'chip'
@@ -418,15 +444,13 @@ def classify_tech_specs_section(section, section_index, category='mac'):
     storage_value = extract_section_storage_value(text, category)
     ram_value = extract_section_ram_value(text, allow_large_values=False)
 
-    if chip_value is not None and section_index <= 1 and ('cpu' in text or 'gpu' in text or section_index == 0):
+    if chip_value is not None and any(hint in text for hint in CHIP_CONTENT_HINTS):
         return 'chip'
     if screen_value is not None and any(hint in text for hint in DISPLAY_CONTENT_HINTS):
         return 'display'
-    if section_index <= 4 and ('ssd' in text or 'flash' in text):
-        return 'storage'
-    if ram_value is not None and storage_value is None and screen_value is None and section_index <= 4:
+    if ram_value is not None and storage_value is None and screen_value is None and any(hint in text for hint in MEMORY_CONTENT_HINTS):
         return 'memory'
-    if storage_value is not None and screen_value is None and section_index <= 4:
+    if storage_value is not None and screen_value is None and any(hint in text for hint in STORAGE_CONTENT_HINTS):
         return 'storage'
 
     return None
@@ -498,25 +522,30 @@ def extract_tech_specs_sections_from_dom(soup):
     current_heading = None
     current_items = []
 
-    for child in main_panel.children:
-        if not getattr(child, 'name', None):
-            continue
+    ordered_nodes = main_panel.find_all(
+        lambda tag: (
+            tag.name == 'h4' and 'h4-para-title' in (tag.get('class') or [])
+        ) or (
+            tag.name == 'div' and 'para-list' in (tag.get('class') or [])
+        )
+    )
 
-        child_classes = set(child.get('class', []))
-        if child.name == 'h4' and 'h4-para-title' in child_classes:
+    for node in ordered_nodes:
+        node_classes = set(node.get('class', []))
+        if node.name == 'h4' and 'h4-para-title' in node_classes:
             if current_heading:
                 sections.append({
                     'heading': current_heading,
                     'items': dedupe_text_parts(current_items),
                 })
-            current_heading = normalize_text(child.get_text(" ", strip=True))
+            current_heading = normalize_text(node.get_text(" ", strip=True))
             current_items = []
             continue
 
-        if not current_heading:
+        if not current_heading or 'para-list' not in node_classes:
             continue
 
-        text = normalize_text(child.get_text(" ", strip=True))
+        text = normalize_text(node.get_text(" ", strip=True))
         if text:
             current_items.append(text)
 
@@ -555,9 +584,9 @@ def extract_detail_specs_from_html(html, category='mac'):
             "Detailed Tech Specs DOM block missing or incomplete; site structure likely changed and the whole page needs re-analysis."
         )
 
-    for section_index, section in enumerate(sections):
+    for section in sections:
         section_text = normalize_text(" ".join([section['heading'], *section['items']]))
-        section_kind = classify_tech_specs_section(section, section_index, category)
+        section_kind = classify_tech_specs_section(section, category)
 
         if section_kind == 'chip':
             chip_value = extract_chip_value(section_text)
@@ -925,10 +954,6 @@ def parse_specs(text, category='mac'):
         elif 'airpods' in text: specs['device_type'] = 'AirPods'
         elif 'studio display' in text or 'pro display' in text: specs['device_type'] = 'Display'
     
-    # Special case: Apple Pencil overrides because it's often in title "Pencil for iPad"
-    if 'pencil' in text:
-        specs['device_type'] = 'Apple Pencil'
-
     # 3. Final Category Fallbacks
     if specs['device_type'] == 'Device':
         if category == 'mac': specs['device_type'] = 'Mac'
