@@ -30,14 +30,28 @@ Fix pattern: sanitize values against valid RAM set and recover suffix only when 
 2. SSD missing on localized pages with weak meta descriptions.
 Fix pattern: enrich from multiple detail sources and parse body/structured data; add narrow fallbacks before broad regex.
 
-3. Device filter regressions from screen bucketing.
+3. Detail-page spec extraction should prefer the full detailed Tech Specs DOM over compact or partial sources.
+Fix pattern: on product pages, go straight to the expanded detailed tech specs block (`.TechSpecs-panel` / detailed tech specs accordion content), split it by section headings like `h4.h4-para-title`, and extract RAM/storage/display/chip from the rows that belong to that section. Do not prioritize `window.pageLevelData.TechSpecs` when the detailed DOM block is present; the DOM block carries richer fields such as wireless/audio/display details and is the preferred source for future parser work. If that detailed subtree is missing or clearly incomplete, treat it as a structure change and log the problem instead of falling back to broad whole-page regex parsing.
+
+4. Device filter regressions from screen bucketing.
 Fix pattern: apply screen buckets only to display-bearing device families.
 
-4. Runner failures from environment drift (`ModuleNotFoundError: playwright`).
+5. Runner failures from environment drift (`ModuleNotFoundError: playwright`).
 Fix pattern: use `run_scraper.sh` bootstrap path and run scraper/verify with venv Python.
 
-5. Persistent SKU-level data gaps (specific iMac M4 locale variants).
+6. Persistent SKU-level data gaps (specific iMac M4 locale variants).
 Fix pattern: allow tightly scoped SKU overrides with clear comments and periodic revalidation.
+
+## Detail Parsing Priority
+When working on product detail parsing, use this source order unless the user asks otherwise:
+1. Detailed Tech Specs DOM block on the product page.
+Identify `.TechSpecs-panel` or equivalent expanded detailed tech specs content, then treat each `h4.h4-para-title` heading plus its following `.para-list` rows as one semantic section.
+2. Targeted parsing from section-local text.
+Parse RAM only from the memory section, storage only from the storage section, screen only from the display section, etc. This is preferred over whole-page regex scans.
+3. If the detailed Tech Specs DOM block is missing or incomplete, log a structural parser problem.
+Assume the HTML changed and the page needs re-analysis. Do not replace this with broad body/meta fallback parsing.
+
+Avoid prioritizing `window.pageLevelData.TechSpecs` over the detailed DOM block. It can still exist on the page, but the detailed rendered section is the canonical source for future scraping improvements because it exposes the fullest per-product spec set.
 
 ## Debug Workflow
 1. Baseline current output:

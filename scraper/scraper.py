@@ -96,6 +96,8 @@ CATEGORIES = ['mac', 'ipad', 'iphone', 'watch', 'appletv', 'accessories']
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36"
 OUTPUT_FILE = "index.html"
+LISTING_TILE_SELECTOR = ".rf-refurb-producttile"
+TECH_SPECS_SELECTOR = ".rf-pdp-techspecssection, .TechSpecs-panel"
 
 ACCESSORY_TYPES = {'Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'HomePod', 'AirPods', 'Display', 'Accessory'}
 MAC_DEVICE_TYPES = {'Mac', 'MacBook Air', 'MacBook Pro', 'Mac mini', 'iMac', 'Mac Studio', 'Mac Pro'}
@@ -109,6 +111,16 @@ STORAGE_UNIT_PATTERN = rf'(gb|go|tb|to){FOOTNOTE_SUFFIX}(?![a-z])'
 DETAIL_SPEC_SECTION_WINDOW = 1800
 DETAIL_FETCH_RETRIES = 3
 DETAIL_FETCH_BACKOFF_SECONDS = 0.75
+DETAIL_FETCH_THROTTLE_SECONDS = 0.35
+LISTING_SCROLL_STEPS = 6
+LISTING_SCROLL_DELAY_SECONDS = 0.65
+LISTING_SETTLE_SECONDS = 0.8
+DETAIL_SCROLL_STEPS = 4
+DETAIL_SCROLL_DELAY_SECONDS = 0.25
+DETAIL_SETTLE_SECONDS = 0.8
+MAX_COUNTRY_WORKERS = 4
+MIN_TECH_SPECS_SECTIONS = 4
+MIN_TECH_SPECS_ITEMS = 8
 MAX_REASONABLE_STORAGE_GB = 16384
 DETAIL_SPEC_SECTION_MARKERS = [
     "product information overview",
@@ -133,6 +145,37 @@ DETAIL_SPEC_SECTION_MARKERS = [
     "informacje o produkcie",
     "dane techniczne",
     "specyfikacja techniczna",
+]
+DISPLAY_SECTION_MARKERS = [
+    "display",
+    "bildschirm",
+    "écran",
+    "scherm",
+    "pantalla",
+    "schermo",
+    "wyświetlacz",
+]
+MEMORY_SECTION_MARKERS = [
+    "memory",
+    "arbeitsspeicher",
+    "mémoire",
+    "geheugen",
+    "memoria",
+    "pamięć operacyjna",
+]
+STORAGE_SECTION_MARKERS = [
+    "storage",
+    "massenspeicher",
+    "stockage",
+    "opslag",
+    "almacenamiento",
+    "archiviazione",
+    "pamięć masowa",
+]
+CHIP_SECTION_MARKERS = [
+    "chip",
+    "puce",
+    "czip",
 ]
 KNOWN_SSD_OVERRIDES_BY_PRODUCT_CODE = {
     # iMac M4 8-core CPU / 8-core GPU listings where storage is intermittently absent in localized detail text.
@@ -186,6 +229,22 @@ def dedupe_text_parts(parts):
         deduped.append(normalized)
 
     return deduped
+
+
+def wait_for_page_settle(page, selector=None, timeout=15000, settle_seconds=0):
+    try:
+        page.wait_for_load_state("networkidle", timeout=timeout)
+    except Exception:
+        pass
+
+    if selector:
+        try:
+            page.wait_for_selector(selector, timeout=timeout)
+        except Exception:
+            pass
+
+    if settle_seconds:
+        time.sleep(settle_seconds)
 
 
 def extract_prioritized_detail_sections(body_text):
@@ -389,6 +448,107 @@ def html_fragment_to_text(fragment):
     return normalize_text(BeautifulSoup(fragment, 'html.parser').get_text(" ", strip=True))
 
 
+def heading_matches(heading, markers):
+    lowered = normalize_text(heading).lower()
+    return lowered in markers
+
+
+class TechSpecsStructureError(ValueError):
+    pass
+
+
+def has_meaningful_tech_specs_sections(sections):
+    if len(sections) < MIN_TECH_SPECS_SECTIONS:
+        return False
+
+    item_count = sum(len(section.get('items', [])) for section in sections)
+    return item_count >= MIN_TECH_SPECS_ITEMS
+
+
+def extract_tech_specs_sections_from_dom(soup):
+    panel = soup.select_one('.TechSpecs-panel')
+    if not panel:
+        return []
+
+    main_panel = panel.select_one('.rc-pdsection-mainpanel') or panel
+    sections = []
+    current_heading = None
+    current_items = []
+
+    for child in main_panel.children:
+        if not getattr(child, 'name', None):
+            continue
+
+        child_classes = set(child.get('class', []))
+        if child.name == 'h4' and 'h4-para-title' in child_classes:
+            if current_heading:
+                sections.append({
+                    'heading': current_heading,
+                    'items': dedupe_text_parts(current_items),
+                })
+            current_heading = normalize_text(child.get_text(" ", strip=True))
+            current_items = []
+            continue
+
+        if not current_heading:
+            continue
+
+        text = normalize_text(child.get_text(" ", strip=True))
+        if text:
+            current_items.append(text)
+
+    if current_heading:
+        sections.append({
+            'heading': current_heading,
+            'items': dedupe_text_parts(current_items),
+        })
+
+    return [section for section in sections if section['heading'] and section['items']]
+
+
+def flatten_tech_specs_sections(sections):
+    parts = []
+    for section in sections:
+        parts.append(section['heading'])
+        parts.extend(section['items'])
+    return dedupe_text_parts(parts)
+
+
+def extract_nested_tech_specs_text(node):
+    parts = []
+
+    if isinstance(node, str):
+        text = html_fragment_to_text(node)
+        if text:
+            parts.append(text)
+        return parts
+
+    if isinstance(node, list):
+        for item in node:
+            parts.extend(extract_nested_tech_specs_text(item))
+        return parts
+
+    if not isinstance(node, dict):
+        return parts
+
+    for key in (
+        'groupTitleFromAsset',
+        'groupTitleFromAttribute',
+        'paragraphText',
+        'value',
+        'text',
+        'title',
+    ):
+        if node.get(key):
+            parts.extend(extract_nested_tech_specs_text(node[key]))
+
+    for key in ('attributeList', 'imageValue', 'imageValueList', 'items'):
+        if node.get(key):
+            parts.extend(extract_nested_tech_specs_text(node[key]))
+
+    return parts
+
+
 def extract_page_level_section_text(html, section_name):
     payload = extract_json_object_after_marker(html, f"window.pageLevelData.{section_name} =")
     if not payload:
@@ -408,41 +568,97 @@ def extract_page_level_section_text(html, section_name):
     for group_entry in groups:
         value = group_entry.get('value') or {}
 
-        for key in ('mutiValueAttributeSelector', 'listOfAttributes'):
+        for key in ('mutiValueAttributeSelector', 'multiValueAttributeSelector', 'listOfAttributes'):
             selector = value.get(key)
             if not selector:
                 continue
 
-            group_title = selector.get('groupTitleFromAsset') or selector.get('groupTitleFromAttribute')
-            if group_title:
-                parts.append(group_title)
-
-            attributes = ((selector.get('attributeList') or {}).get('items') or [])
-            for attribute in attributes:
-                item_text = html_fragment_to_text(attribute.get('value'))
-                if item_text:
-                    parts.append(item_text)
+            parts.extend(extract_nested_tech_specs_text(selector))
 
     return dedupe_text_parts(parts)
 
 
 def extract_tech_specs_dom_text(soup):
-    parts = []
-    tech_specs_section = soup.select_one('.rf-pdp-techspecssection') or soup.select_one('.TechSpecs-panel')
-    if not tech_specs_section:
-        return parts
-
-    section_text = normalize_text(tech_specs_section.get_text(" ", strip=True))
-    if section_text:
-        parts.append(section_text)
-    return parts
+    sections = extract_tech_specs_sections_from_dom(soup)
+    return flatten_tech_specs_sections(sections)
 
 
 def extract_tech_specs_text_from_html(html, soup):
-    parts = []
-    parts.extend(extract_page_level_section_text(html, "TechSpecs"))
-    parts.extend(extract_tech_specs_dom_text(soup))
-    return dedupe_text_parts(parts)
+    return extract_tech_specs_dom_text(soup)
+
+
+def extract_detail_specs_from_html(html, category='mac'):
+    soup = BeautifulSoup(html, 'html.parser')
+    title_text = normalize_text(soup.title.get_text(" ", strip=True)) if soup.title else ""
+    title_specs, _ = parse_specs(title_text, category)
+    specs = merge_specs({
+        "ram": None,
+        "ssd": None,
+        "chip": None,
+        "screen": None,
+        "device_type": "Device"
+    }, title_specs, prefer_updates=True)
+
+    sections = extract_tech_specs_sections_from_dom(soup)
+    if not has_meaningful_tech_specs_sections(sections):
+        raise TechSpecsStructureError(
+            "Detailed Tech Specs DOM block missing or incomplete; site structure likely changed and the whole page needs re-analysis."
+        )
+
+    for section in sections:
+        section_text = normalize_text(" ".join([section['heading'], *section['items']]))
+        section_first_text = normalize_text(f"{section_text} {title_text}")
+        parsed_section_specs, _ = parse_specs(section_first_text, category)
+
+        if heading_matches(section['heading'], CHIP_SECTION_MARKERS) and parsed_section_specs.get('chip') is not None:
+            specs['chip'] = parsed_section_specs['chip']
+        elif heading_matches(section['heading'], MEMORY_SECTION_MARKERS) and parsed_section_specs.get('ram') is not None:
+            specs['ram'] = parsed_section_specs['ram']
+        elif heading_matches(section['heading'], STORAGE_SECTION_MARKERS) and parsed_section_specs.get('ssd') is not None:
+            specs['ssd'] = parsed_section_specs['ssd']
+        elif heading_matches(section['heading'], DISPLAY_SECTION_MARKERS) and parsed_section_specs.get('screen') is not None:
+            specs['screen'] = parsed_section_specs['screen']
+
+    detail_text = normalize_text(" ".join(dedupe_text_parts([title_text, *flatten_tech_specs_sections(sections)])))
+    fallback_specs, _ = parse_specs(detail_text, category)
+    specs = merge_specs(specs, fallback_specs, prefer_updates=False)
+    return specs, detail_text
+
+
+def fetch_detail_html(product_url):
+    last_error = None
+    for attempt in range(DETAIL_FETCH_RETRIES):
+        try:
+            req = urllib.request.Request(product_url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                return response.read().decode('utf-8', errors='ignore')
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 < DETAIL_FETCH_RETRIES:
+                time.sleep(DETAIL_FETCH_BACKOFF_SECONDS * (attempt + 1))
+    raise last_error
+
+
+def fetch_detail_html_playwright(page, product_url):
+    last_error = None
+    for attempt in range(DETAIL_FETCH_RETRIES):
+        try:
+            page.goto(product_url, timeout=60000, wait_until="domcontentloaded")
+            wait_for_page_settle(page, selector=TECH_SPECS_SELECTOR, timeout=15000, settle_seconds=DETAIL_SETTLE_SECONDS)
+            for _ in range(DETAIL_SCROLL_STEPS):
+                page.evaluate("window.scrollBy(0, 1200)")
+                time.sleep(DETAIL_SCROLL_DELAY_SECONDS)
+            wait_for_page_settle(page, selector=TECH_SPECS_SELECTOR, timeout=10000, settle_seconds=DETAIL_SETTLE_SECONDS)
+            return page.content()
+        except Exception as exc:
+            last_error = exc
+            try:
+                page.goto("about:blank", timeout=10000, wait_until="domcontentloaded")
+            except Exception:
+                pass
+            if attempt + 1 < DETAIL_FETCH_RETRIES:
+                time.sleep(DETAIL_FETCH_BACKOFF_SECONDS * (attempt + 1))
+    raise last_error
 
 
 def extract_detail_text(product_url):
@@ -465,10 +681,11 @@ def extract_detail_text_playwright(page, product_url):
     for attempt in range(DETAIL_FETCH_RETRIES):
         try:
             page.goto(product_url, timeout=60000, wait_until="domcontentloaded")
-            for _ in range(3):
+            wait_for_page_settle(page, selector=TECH_SPECS_SELECTOR, timeout=15000, settle_seconds=DETAIL_SETTLE_SECONDS)
+            for _ in range(DETAIL_SCROLL_STEPS):
                 page.evaluate("window.scrollBy(0, 1200)")
-                time.sleep(0.2)
-            time.sleep(0.4)
+                time.sleep(DETAIL_SCROLL_DELAY_SECONDS)
+            wait_for_page_settle(page, selector=TECH_SPECS_SELECTOR, timeout=10000, settle_seconds=DETAIL_SETTLE_SECONDS)
             return extract_detail_text_from_html(page.content())
         except Exception as exc:
             last_error = exc
@@ -534,29 +751,29 @@ def enrich_products_with_detail_specs(products, country_code, browser=None):
 
                     # Keep urllib as a stable baseline.
                     try:
-                        urllib_text = extract_detail_text(url)
-                        if urllib_text:
-                            detail_texts.append(urllib_text)
+                        urllib_html = fetch_detail_html(url)
+                        if urllib_html:
+                            detail_texts.append(urllib_html)
                     except Exception as e:
                         errors.append(f"urllib detail fetch failed ({country_code}): {url} -> {e}")
 
                     # Rendered page can expose extra localized/spec data.
                     if detail_page is not None:
                         try:
-                            playwright_text = extract_detail_text_playwright(detail_page, url)
-                            if playwright_text:
-                                detail_texts.append(playwright_text)
+                            playwright_html = fetch_detail_html_playwright(detail_page, url)
+                            if playwright_html:
+                                detail_texts.append(playwright_html)
                         except Exception as e:
                             errors.append(f"Playwright detail fetch failed ({country_code}): {url} -> {e}")
 
                     cache[url] = detail_texts
-                    time.sleep(0.12)  # small throttle to reduce bursty requests
+                    time.sleep(DETAIL_FETCH_THROTTLE_SECONDS)
 
                 detail_texts = cache[url]
                 if detail_texts:
                     merged_specs = dict(product['specs'])
-                    for detail_text in detail_texts:
-                        detail_specs, _ = parse_specs(detail_text, product.get('category', 'mac'))
+                    for detail_html in detail_texts:
+                        detail_specs, _ = extract_detail_specs_from_html(detail_html, product.get('category', 'mac'))
                         merged_specs = merge_specs(merged_specs, detail_specs, prefer_updates=True)
                     if merged_specs != product['specs']:
                         product['specs'] = merged_specs
@@ -610,6 +827,8 @@ def bucket_screen_inches(screen):
     # Keep all common "13-inch class" screens in one bucket (13.0 / 13.3 / 13.6).
     if 12.7 <= value < 14.0:
         return 13
+    if 23.0 <= value < 25.0:
+        return 24
     if value < 20:
         return int(value)
     return None
@@ -650,7 +869,8 @@ def fetch_store_data(country_code, config):
         items = []
         
         try:
-            page.goto(url, timeout=60000)
+            page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            wait_for_page_settle(page, selector=LISTING_TILE_SELECTOR, timeout=15000, settle_seconds=LISTING_SETTLE_SECONDS)
             
             # Check if 404 or redirect to home (some categories might be missing in some countries)
             if "as-refurbished" not in page.url and f"/{category}" not in page.url:
@@ -659,15 +879,16 @@ def fetch_store_data(country_code, config):
                 continue
 
             # Incremental scroll to trigger lazy loading
-            for _ in range(5): 
+            for _ in range(LISTING_SCROLL_STEPS): 
                 page.evaluate("window.scrollBy(0, 1000)")
-                time.sleep(0.5)
+                time.sleep(LISTING_SCROLL_DELAY_SECONDS)
+            wait_for_page_settle(page, selector=LISTING_TILE_SELECTOR, timeout=10000, settle_seconds=LISTING_SETTLE_SECONDS)
                 
             content = page.content()
             soup = BeautifulSoup(content, 'html.parser')
             
             # Select product tiles
-            tiles = soup.select('.rf-refurb-producttile')
+            tiles = soup.select(LISTING_TILE_SELECTOR)
             
             for tile in tiles:
                 try:
@@ -859,9 +1080,18 @@ def parse_specs(text, category='mac'):
     # Screen size (inch- or locale-word based) and watch size (mm)
     # Prefer decimal measurements (e.g. 13.6) over integer mentions (e.g. "13-inch").
     if supports_screen_buckets(specs['device_type']):
-        screen_match = re.search(r'(\d{1,2}[.,]\d)\s*(?:["”]|-?\s*(?:inch|inches|cal(?:i|owy|owe)?|zoll|pouces|pulgadas|pollici))', text)
-        if not screen_match:
-            screen_match = re.search(r'(\d{1,2})\s*(?:["”]|-?\s*(?:inch|inches|cal(?:i|owy|owe)?|zoll|pouces|pulgadas|pollici))', text)
+        display_heading_pattern = r'(?:' + '|'.join(re.escape(marker) for marker in DISPLAY_SECTION_MARKERS) + r')'
+        screen_patterns = [
+            rf'{display_heading_pattern}.{{0,260}}?(\d{{1,2}}[.,]\d)\s*(?:["”]|-?\s*(?:inch|inches|cal(?:i|owy|owe)?|zoll|pouces|pulgadas|pollici))',
+            rf'{display_heading_pattern}.{{0,260}}?(\d{{1,2}})\s*(?:["”]|-?\s*(?:inch|inches|cal(?:i|owy|owe)?|zoll|pouces|pulgadas|pollici))',
+            r'(\d{1,2}[.,]\d)\s*(?:["”]|-?\s*(?:inch|inches|cal(?:i|owy|owe)?|zoll|pouces|pulgadas|pollici))',
+            r'(\d{1,2})\s*(?:["”]|-?\s*(?:inch|inches|cal(?:i|owy|owe)?|zoll|pouces|pulgadas|pollici))',
+        ]
+        screen_match = None
+        for pattern in screen_patterns:
+            screen_match = re.search(pattern, text)
+            if screen_match:
+                break
         if screen_match:
             specs['screen'] = float(screen_match.group(1).replace(',', '.'))
     elif category == 'watch' or specs['device_type'] == 'Apple Watch':
@@ -1262,7 +1492,7 @@ def main():
     
     jobs = {}
     master_errors = []
-    with ProcessPoolExecutor(max_workers=len(valid_countries)) as executor:
+    with ProcessPoolExecutor(max_workers=min(MAX_COUNTRY_WORKERS, len(valid_countries))) as executor:
         for country in valid_countries:
             config = STORES[country]
             if 'base_url' not in config:
