@@ -57,4 +57,3 @@ python3 scraper/verify_data.py
 - More technical project guidance: [AGENTS.md](AGENTS.md)
 
 If you just want the results, use the GitHub Pages link above or open the generated `index.html`.
-
