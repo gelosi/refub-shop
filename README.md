@@ -63,7 +63,7 @@ The scraper behavior is defined in `scraper/scraper.py`. You can adjust:
 A `.github/workflows/scrape.yml` file is included to run the scraper daily (at 08:00 UTC) and commit the updated `index.html` back to the repository.
 
 ## 🤖 Automated Parser Repair Loop
-This repository now includes a three-stage automation flow for GitHub Actions plus Gemini-based parser repair:
+This repository now includes a three-stage automation flow for GitHub Actions plus Gemini CLI-based parser repair:
 
 - `.github/workflows/scrape.yml`
   - runs the daily scrape
@@ -78,10 +78,10 @@ This repository now includes a three-stage automation flow for GitHub Actions pl
   - dispatches parser repair only when the threshold is exceeded
 - `.github/workflows/parser-fix.yml`
   - opens or updates a parser repair issue
-  - uses Gemini to propose a narrow edit to `scraper/scraper.py`
+  - uses the official Gemini CLI GitHub Action to make a narrow edit to `scraper/scraper.py`
   - reruns `./run_scraper.sh`, validates the before/after verifier totals, and rejects non-helpful repairs
   - pushes successful repairs to `automation/parser-repair` and opens or updates a PR
-  - fails with a clear message when `GEMINI_API_KEY` is missing or Gemini quota/rate limits block the run
+  - fails with a clear message when `GEMINI_API_KEY` is missing or Gemini CLI hits quota/rate limits
 
 ### One-Time GitHub Setup
 The repository files alone are not enough. You still need to configure GitHub:
@@ -97,7 +97,7 @@ When post-scrape validation exceeds the configured missing-RAM error-rate thresh
 1. `Daily Scrape` finishes independently and commits the latest `index.html`.
 2. `Validate Generated Data` runs afterward and checks the current error rate on `main`.
 3. If the threshold is exceeded, it dispatches `Parser Repair`.
-4. `Parser Repair` creates or updates the `Daily scrape parser repair` issue, asks Gemini for a bounded parser fix, reruns the scraper, and compares before/after verifier totals.
+4. `Parser Repair` creates or updates the `Daily scrape parser repair` issue, runs Gemini CLI headlessly for a bounded parser fix, reruns the scraper, and compares before/after verifier totals.
 5. If the candidate repair is helpful, the workflow commits `scraper/scraper.py` plus regenerated `index.html` to `automation/parser-repair` and opens or updates a PR.
 6. If the repair is not helpful, if `GEMINI_API_KEY` is missing, or if Gemini quota is exhausted, the repair workflow fails without affecting the scrape workflow and posts the failure reason to the issue.
 

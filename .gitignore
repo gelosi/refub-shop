@@ -23,3 +23,7 @@ scraper/header_dump.txt
 # Editor directories
 .idea/
 .vscode/
+
+# Gemini CLI
+.gemini/
+gha-creds-*.json

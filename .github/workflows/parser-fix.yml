@@ -71,6 +71,9 @@ jobs:
       - name: Capture current metrics
         run: python3 scraper/verify_data.py --json > current-metrics.json
 
+      - name: Capture current verifier report
+        run: python3 scraper/verify_data.py > current-report.txt
+
       - name: Open or update parser repair issue
         id: issue
         uses: actions/github-script@v7
@@ -96,7 +99,7 @@ jobs:
             const labels = [
               { name: 'automation', color: '0e8a16', description: 'Created by repository automation.' },
               { name: 'parser-fix', color: 'b60205', description: 'Parser work needed after a scrape run.' },
-              { name: 'gemini', color: '1d76db', description: 'Uses Gemini to attempt parser repair.' },
+              { name: 'gemini', color: '1d76db', description: 'Uses Gemini CLI to attempt parser repair.' },
             ];
 
             for (const label of labels) {
@@ -132,8 +135,8 @@ jobs:
               '',
               '## Automated Repair Plan',
               '- Read `AGENTS.md` and `.github/parser-repair-instructions.md`.',
-              '- Use Gemini to propose a narrow parser repair in `scraper/scraper.py`.',
-              '- Regenerate `index.html` with `./run_scraper.sh`.',
+              '- Use Gemini CLI to make a narrow parser repair in `scraper/scraper.py` only.',
+              '- Regenerate `index.html` with `./run_scraper.sh` after the Gemini step.',
               '- Keep the change only when the verifier metrics improve without regressions.',
               '- Push the repair to an automation branch and open or update a PR when successful.',
             ].filter(Boolean).join('\n');
@@ -173,18 +176,135 @@ jobs:
             });
             core.setOutput('issue_number', String(created.data.number));
 
-      - name: Run automated parser repair
-        id: repair
+      - name: Check Gemini API key
+        id: auth
         continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "message=GEMINI_API_KEY is not configured. Parser repair cannot run." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Comment missing Gemini key
+        if: steps.auth.outcome != 'success'
+        uses: actions/github-script@v7
+        env:
+          FAILURE_MESSAGE: ${{ steps.auth.outputs.message }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const body = [
+              '## Repair Failure',
+              `- ${process.env.FAILURE_MESSAGE || 'GEMINI_API_KEY is not configured. Parser repair cannot run.'}`,
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number('${{ steps.issue.outputs.issue_number }}'),
+              body,
+            });
+
+      - name: Fail repair workflow when key is missing
+        if: steps.auth.outcome != 'success'
+        run: exit 1
+
+      - name: Run Gemini CLI repair
+        id: gemini
+        if: steps.auth.outcome == 'success'
+        continue-on-error: true
+        uses: google-github-actions/run-gemini-cli@v0
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          gemini_model: ${{ env.GEMINI_MODEL }}
+          upload_artifacts: false
+          prompt: |
+            You are fixing a Python parser regression in this repository.
+
+            Read `AGENTS.md` and `.github/parser-repair-instructions.md` first.
+
+            Current verifier metrics are in `current-metrics.json`.
+            Current verifier report is in `current-report.txt`.
+
+            Edit only `scraper/scraper.py`.
+            Do not modify `index.html`, workflow files, docs, issue text files, git metadata, or branches.
+            Do not commit or push.
+
+            Make the narrowest safe parser or detail-enrichment fix that can improve missing RAM and/or missing SSD without reducing total products or increasing implausible RAM.
+
+            Leave the repository ready for these exact commands to be run after you finish:
+            - `python3 -m py_compile scraper/scraper.py scraper/verify_data.py scripts/metrics_gate.py scripts/parser_repair.py`
+            - `./run_scraper.sh`
+            - `python3 scraper/verify_data.py --json > repaired-metrics.json`
+
+            If no safe fix is clear, make no code changes and say that explicitly.
+
+      - name: Persist Gemini CLI summary
+        if: steps.gemini.outcome == 'success'
+        env:
+          GEMINI_SUMMARY: ${{ steps.gemini.outputs.summary }}
+        run: |
+          printf '%s\n' "$GEMINI_SUMMARY" > "$RUNNER_TEMP/gemini-summary.txt"
+
+      - name: Comment Gemini CLI failure
+        if: steps.auth.outcome == 'success' && steps.gemini.outcome != 'success'
+        uses: actions/github-script@v7
+        env:
+          GEMINI_ERROR: ${{ steps.gemini.outputs.error }}
+          GEMINI_SUMMARY: ${{ steps.gemini.outputs.summary }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const errorText = `${process.env.GEMINI_ERROR || ''}`.trim();
+            const summaryText = `${process.env.GEMINI_SUMMARY || ''}`.trim();
+            const lower = errorText.toLowerCase();
+            let message = 'Gemini CLI repair failed. Check the workflow logs for details.';
+
+            if (!errorText) {
+              message = 'Gemini CLI repair failed before producing an error payload. Check the workflow logs for details.';
+            } else if (lower.includes('quota') || lower.includes('rate limit') || lower.includes('resource_exhausted') || lower.includes('429')) {
+              message = 'Gemini CLI repair failed because Gemini quota was exhausted or the request was rate-limited.';
+            }
+
+            const lines = ['## Repair Failure', `- ${message}`];
+            if (summaryText) {
+              lines.push('', '## Gemini CLI Summary', `- ${summaryText}`);
+            }
+            if (errorText) {
+              lines.push('', '## Gemini CLI Error', '```text', errorText, '```');
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number('${{ steps.issue.outputs.issue_number }}'),
+              body: lines.join('\n'),
+            });
+
+      - name: Fail repair workflow when Gemini CLI fails
+        if: steps.auth.outcome == 'success' && steps.gemini.outcome != 'success'
+        run: exit 1
+
+      - name: Validate Python syntax after Gemini repair
+        run: python3 -m py_compile scraper/scraper.py scraper/verify_data.py scripts/metrics_gate.py scripts/parser_repair.py
+
+      - name: Regenerate scrape output
+        run: ./run_scraper.sh
+
+      - name: Capture repaired metrics
+        run: python3 scraper/verify_data.py --json > repaired-metrics.json
+
+      - name: Validate repair candidate
+        id: repair
+        continue-on-error: true
+        run: |
           python3 scripts/parser_repair.py \
-            --model "$GEMINI_MODEL" \
+            --before-json current-metrics.json \
+            --after-json repaired-metrics.json \
+            --summary-file "$RUNNER_TEMP/gemini-summary.txt" \
             --comment-out parser-repair-comment.md \
-            --result-json-out parser-repair-result.json \
-            --source-validation-run-url "${{ inputs.source_validation_run_url }}" \
-            --source-scrape-run-url "${{ inputs.source_scrape_run_url }}"
+            --result-json-out parser-repair-result.json
 
       - name: Upload parser repair artifacts
         if: always()
@@ -193,13 +313,15 @@ jobs:
           name: parser-repair-${{ github.run_id }}
           path: |
             current-metrics.json
+            current-report.txt
+            repaired-metrics.json
             parser-repair-comment.md
             parser-repair-result.json
             scraper/scraper.py
             index.html
           if-no-files-found: ignore
 
-      - name: Comment repair failure
+      - name: Comment repair validation failure
         if: steps.repair.outcome != 'success'
         uses: actions/github-script@v7
         with:
@@ -214,7 +336,7 @@ jobs:
               body,
             });
 
-      - name: Fail repair workflow when repair attempt failed
+      - name: Fail repair workflow when validation fails
         if: steps.repair.outcome != 'success'
         run: exit 1
 
