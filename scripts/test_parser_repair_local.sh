@@ -112,7 +112,6 @@ echo "Running Gemini CLI with model: $MODEL"
   -p "$(cat "$PROMPT_FILE")" \
   --model "$MODEL" \
   --output-format json \
-  --all-files \
   --yolo \
   > "$OUTPUT_JSON"
 
@@ -122,9 +121,11 @@ import sys
 from pathlib import Path
 
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+error = payload.get("error")
+if error:
+    raise SystemExit(f"Gemini CLI returned an error payload: {error}")
 response = payload.get("response", "").strip()
 if not response:
-    error = payload.get("error")
     raise SystemExit(f"Gemini CLI returned no response. Error: {error}")
 Path(sys.argv[2]).write_text(response + "\n", encoding="utf-8")
 PY
