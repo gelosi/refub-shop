@@ -471,79 +471,6 @@ def apply_known_overrides(product):
     return product
 
 
-def extract_detail_text_from_html(html):
-    soup = BeautifulSoup(html, 'html.parser')
-    parts = []
-    if soup.title and soup.title.get_text(strip=True):
-        parts.append(soup.title.get_text(" ", strip=True))
-
-    tech_specs_parts = extract_tech_specs_text_from_html(html, soup)
-    if tech_specs_parts:
-        parts.extend(tech_specs_parts)
-        return normalize_text(" ".join(dedupe_text_parts(parts)))
-
-    if soup.body:
-        body_text = soup.body.get_text(" ", strip=True)
-        if body_text:
-            parts.extend(extract_prioritized_detail_sections(body_text))
-            parts.append(body_text[:20000])
-
-    # Structured data can include storage fields that are not visible in normal copy.
-    for script in soup.select('script[type="application/ld+json"]'):
-        script_text = normalize_text(script.get_text(" ", strip=True))
-        if script_text:
-            parts.append(script_text[:12000])
-
-    desc_meta = soup.find('meta', attrs={'name': 'description'}) or soup.find('meta', attrs={'property': 'og:description'})
-    if desc_meta and desc_meta.get('content'):
-        parts.append(desc_meta.get('content').replace('|', ' '))
-
-    return normalize_text(" ".join(dedupe_text_parts(parts)))
-
-
-def extract_json_object_after_marker(text, marker):
-    marker_index = text.find(marker)
-    if marker_index == -1:
-        return None
-
-    start = text.find('{', marker_index + len(marker))
-    if start == -1:
-        return None
-
-    depth = 0
-    in_string = False
-    escape_next = False
-
-    for idx in range(start, len(text)):
-        char = text[idx]
-
-        if in_string:
-            if escape_next:
-                escape_next = False
-            elif char == '\\':
-                escape_next = True
-            elif char == '"':
-                in_string = False
-            continue
-
-        if char == '"':
-            in_string = True
-        elif char == '{':
-            depth += 1
-        elif char == '}':
-            depth -= 1
-            if depth == 0:
-                return text[start:idx + 1]
-
-    return None
-
-
-def html_fragment_to_text(fragment):
-    if not fragment:
-        return ""
-    return normalize_text(BeautifulSoup(fragment, 'html.parser').get_text(" ", strip=True))
-
-
 def heading_matches(heading, markers):
     lowered = normalize_text(heading).lower()
     return lowered in markers
@@ -610,79 +537,6 @@ def flatten_tech_specs_sections(sections):
     return dedupe_text_parts(parts)
 
 
-def extract_nested_tech_specs_text(node):
-    parts = []
-
-    if isinstance(node, str):
-        text = html_fragment_to_text(node)
-        if text:
-            parts.append(text)
-        return parts
-
-    if isinstance(node, list):
-        for item in node:
-            parts.extend(extract_nested_tech_specs_text(item))
-        return parts
-
-    if not isinstance(node, dict):
-        return parts
-
-    for key in (
-        'groupTitleFromAsset',
-        'groupTitleFromAttribute',
-        'paragraphText',
-        'value',
-        'text',
-        'title',
-    ):
-        if node.get(key):
-            parts.extend(extract_nested_tech_specs_text(node[key]))
-
-    for key in ('attributeList', 'imageValue', 'imageValueList', 'items'):
-        if node.get(key):
-            parts.extend(extract_nested_tech_specs_text(node[key]))
-
-    return parts
-
-
-def extract_page_level_section_text(html, section_name):
-    payload = extract_json_object_after_marker(html, f"window.pageLevelData.{section_name} =")
-    if not payload:
-        return []
-
-    try:
-        data = json.loads(payload)
-    except json.JSONDecodeError:
-        return []
-
-    parts = []
-    section_title = data.get('sectionTitle')
-    if section_title:
-        parts.append(section_title)
-
-    groups = (((data.get('tiles') or {}).get('groups') or {}).get('items') or [])
-    for group_entry in groups:
-        value = group_entry.get('value') or {}
-
-        for key in ('mutiValueAttributeSelector', 'multiValueAttributeSelector', 'listOfAttributes'):
-            selector = value.get(key)
-            if not selector:
-                continue
-
-            parts.extend(extract_nested_tech_specs_text(selector))
-
-    return dedupe_text_parts(parts)
-
-
-def extract_tech_specs_dom_text(soup):
-    sections = extract_tech_specs_sections_from_dom(soup)
-    return flatten_tech_specs_sections(sections)
-
-
-def extract_tech_specs_text_from_html(html, soup):
-    return extract_tech_specs_dom_text(soup)
-
-
 def extract_detail_specs_from_html(html, category='mac'):
     soup = BeautifulSoup(html, 'html.parser')
     title_text = normalize_text(soup.title.get_text(" ", strip=True)) if soup.title else ""
@@ -729,20 +583,6 @@ def extract_detail_specs_from_html(html, category='mac'):
     return specs, detail_text
 
 
-def fetch_detail_html(product_url):
-    last_error = None
-    for attempt in range(DETAIL_FETCH_RETRIES):
-        try:
-            req = urllib.request.Request(product_url, headers={"User-Agent": USER_AGENT})
-            with urllib.request.urlopen(req, timeout=30) as response:
-                return response.read().decode('utf-8', errors='ignore')
-        except Exception as exc:
-            last_error = exc
-            if attempt + 1 < DETAIL_FETCH_RETRIES:
-                time.sleep(DETAIL_FETCH_BACKOFF_SECONDS * (attempt + 1))
-    raise last_error
-
-
 def fetch_detail_html_playwright(page, product_url):
     last_error = None
     for attempt in range(DETAIL_FETCH_RETRIES):
@@ -763,45 +603,6 @@ def fetch_detail_html_playwright(page, product_url):
             if attempt + 1 < DETAIL_FETCH_RETRIES:
                 time.sleep(DETAIL_FETCH_BACKOFF_SECONDS * (attempt + 1))
     raise last_error
-
-
-def extract_detail_text(product_url):
-    last_error = None
-    for attempt in range(DETAIL_FETCH_RETRIES):
-        try:
-            req = urllib.request.Request(product_url, headers={"User-Agent": USER_AGENT})
-            with urllib.request.urlopen(req, timeout=30) as response:
-                html = response.read().decode('utf-8', errors='ignore')
-            return extract_detail_text_from_html(html)
-        except Exception as exc:
-            last_error = exc
-            if attempt + 1 < DETAIL_FETCH_RETRIES:
-                time.sleep(DETAIL_FETCH_BACKOFF_SECONDS * (attempt + 1))
-    raise last_error
-
-
-def extract_detail_text_playwright(page, product_url):
-    last_error = None
-    for attempt in range(DETAIL_FETCH_RETRIES):
-        try:
-            page.goto(product_url, timeout=60000, wait_until="domcontentloaded")
-            wait_for_page_settle(page, selector=TECH_SPECS_SELECTOR, timeout=15000, settle_seconds=DETAIL_SETTLE_SECONDS)
-            for _ in range(DETAIL_SCROLL_STEPS):
-                page.evaluate("window.scrollBy(0, 1200)")
-                time.sleep(DETAIL_SCROLL_DELAY_SECONDS)
-            wait_for_page_settle(page, selector=TECH_SPECS_SELECTOR, timeout=10000, settle_seconds=DETAIL_SETTLE_SECONDS)
-            return extract_detail_text_from_html(page.content())
-        except Exception as exc:
-            last_error = exc
-            try:
-                page.goto("about:blank", timeout=10000, wait_until="domcontentloaded")
-            except Exception:
-                pass
-            if attempt + 1 < DETAIL_FETCH_RETRIES:
-                time.sleep(DETAIL_FETCH_BACKOFF_SECONDS * (attempt + 1))
-    raise last_error
-
-
 def needs_detail_enrichment(product):
     specs = product.get('specs', {})
     category = product.get('category')
@@ -851,34 +652,21 @@ def enrich_products_with_detail_specs(products, country_code, browser=None):
 
             try:
                 if url not in cache:
-                    detail_texts = []
-
-                    # Keep urllib as a stable baseline.
-                    try:
-                        urllib_html = fetch_detail_html(url)
-                        if urllib_html:
-                            detail_texts.append(urllib_html)
-                    except Exception as e:
-                        errors.append(f"urllib detail fetch failed ({country_code}): {url} -> {e}")
-
-                    # Rendered page can expose extra localized/spec data.
+                    detail_html = None
                     if detail_page is not None:
                         try:
-                            playwright_html = fetch_detail_html_playwright(detail_page, url)
-                            if playwright_html:
-                                detail_texts.append(playwright_html)
+                            detail_html = fetch_detail_html_playwright(detail_page, url)
                         except Exception as e:
                             errors.append(f"Playwright detail fetch failed ({country_code}): {url} -> {e}")
 
-                    cache[url] = detail_texts
+                    cache[url] = detail_html
                     time.sleep(DETAIL_FETCH_THROTTLE_SECONDS)
 
-                detail_texts = cache[url]
-                if detail_texts:
+                detail_html = cache[url]
+                if detail_html:
                     merged_specs = dict(product['specs'])
-                    for detail_html in detail_texts:
-                        detail_specs, _ = extract_detail_specs_from_html(detail_html, product.get('category', 'mac'))
-                        merged_specs = merge_specs(merged_specs, detail_specs, prefer_updates=True)
+                    detail_specs, _ = extract_detail_specs_from_html(detail_html, product.get('category', 'mac'))
+                    merged_specs = merge_specs(merged_specs, detail_specs, prefer_updates=True)
                     if merged_specs != product['specs']:
                         product['specs'] = merged_specs
                         enriched += 1
