@@ -8,10 +8,11 @@ cd "$ROOT_DIR"
 MODEL="${GEMINI_MODEL:-gemini-2.5-flash}"
 GEMINI_BIN="${GEMINI_BIN:-gemini}"
 ALLOW_DIRTY="false"
+FALLBACK_MODELS=()
 
 usage() {
   cat <<'EOF'
-Usage: scripts/test_parser_repair_local.sh [--model MODEL] [--gemini-bin PATH] [--allow-dirty]
+Usage: scripts/test_parser_repair_local.sh [--model MODEL] [--fallback-model MODEL] [--gemini-bin PATH] [--allow-dirty]
 
 Runs the local Gemini CLI parser repair loop:
 1. Captures baseline verifier metrics
@@ -34,6 +35,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --gemini-bin)
       GEMINI_BIN="${2:?missing gemini binary path}"
+      shift 2
+      ;;
+    --fallback-model)
+      FALLBACK_MODELS+=("${2:?missing fallback model value}")
       shift 2
       ;;
     --allow-dirty)
@@ -75,6 +80,7 @@ BASELINE_REPORT="$WORK_DIR/current-report.txt"
 REPAIRED_JSON="$WORK_DIR/repaired-metrics.json"
 SUMMARY_FILE="$WORK_DIR/gemini-summary.txt"
 OUTPUT_JSON="$WORK_DIR/gemini-output.json"
+ERROR_LOG="$WORK_DIR/gemini-error.log"
 PROMPT_FILE="$WORK_DIR/gemini-prompt.txt"
 COMMENT_OUT="$WORK_DIR/parser-repair-comment.md"
 RESULT_JSON="$WORK_DIR/parser-repair-result.json"
@@ -107,13 +113,58 @@ Leave the repository ready for these exact commands to be run after you finish:
 If no safe fix is clear, make no code changes and say that explicitly.
 EOF
 
-echo "Running Gemini CLI with model: $MODEL"
-"$GEMINI_BIN" \
-  -p "$(cat "$PROMPT_FILE")" \
-  --model "$MODEL" \
-  --output-format json \
-  --yolo \
-  > "$OUTPUT_JSON"
+run_gemini() {
+  local model="$1"
+  echo "Running Gemini CLI with model: $model"
+  if "$GEMINI_BIN" \
+    -p "$(cat "$PROMPT_FILE")" \
+    --model "$model" \
+    --output-format json \
+    --yolo \
+    > "$OUTPUT_JSON" 2> "$ERROR_LOG"; then
+    return 0
+  fi
+
+  if grep -qiE 'RESOURCE_EXHAUSTED|MODEL_CAPACITY_EXHAUSTED|rateLimitExceeded|No capacity available|status 429' "$ERROR_LOG"; then
+    return 2
+  fi
+
+  echo "Gemini CLI failed. stderr:" >&2
+  cat "$ERROR_LOG" >&2
+  return 1
+}
+
+if ! run_gemini "$MODEL"; then
+  status=$?
+  if [[ $status -eq 2 ]] && [[ ${#FALLBACK_MODELS[@]} -gt 0 ]]; then
+    echo "Primary model is capacity-limited. Trying fallback models..." >&2
+    success="false"
+    for fallback in "${FALLBACK_MODELS[@]}"; do
+      if run_gemini "$fallback"; then
+        success="true"
+        MODEL="$fallback"
+        break
+      fi
+      fallback_status=$?
+      if [[ $fallback_status -ne 2 ]]; then
+        exit $fallback_status
+      fi
+    done
+    if [[ "$success" != "true" ]]; then
+      echo "Gemini CLI capacity exhausted for all configured models." >&2
+      cat "$ERROR_LOG" >&2
+      exit 1
+    fi
+  elif [[ $status -eq 2 ]]; then
+    echo "Gemini CLI hit model capacity limits for $MODEL." >&2
+    echo "Retry later or rerun with a fallback, for example:" >&2
+    echo "  scripts/test_parser_repair_local.sh --model $MODEL --fallback-model gemini-2.5-pro" >&2
+    cat "$ERROR_LOG" >&2
+    exit 1
+  else
+    exit $status
+  fi
+fi
 
 python3 - <<'PY' "$OUTPUT_JSON" "$SUMMARY_FILE"
 import json
@@ -142,6 +193,7 @@ python3 scripts/parser_repair.py \
   --result-json-out "$RESULT_JSON"
 
 echo "Local parser repair validation passed."
+echo "Model used: $MODEL"
 echo "Summary: $(cat "$SUMMARY_FILE")"
 echo "Comment report: $COMMENT_OUT"
 echo "Result JSON: $RESULT_JSON"
