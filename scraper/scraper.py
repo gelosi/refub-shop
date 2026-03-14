@@ -1076,6 +1076,8 @@ def generate_html(all_products):
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Apple Refurbished Tracker</title>
+    <script data-goatcounter="https://refub-shop.goatcounter.com/count"
+        async src="//gc.zgo.at/count.js"></script>
     <style>
         :root {{
             --bg-0: #f3f6fc;
