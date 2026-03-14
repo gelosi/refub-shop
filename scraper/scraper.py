@@ -108,6 +108,7 @@ STORAGE_UNIT_PATTERN = rf'(gb|go|tb|to){FOOTNOTE_SUFFIX}(?![a-z])'
 DETAIL_SPEC_SECTION_WINDOW = 1800
 DETAIL_FETCH_RETRIES = 3
 DETAIL_FETCH_BACKOFF_SECONDS = 0.75
+MAX_REASONABLE_STORAGE_GB = 16384
 DETAIL_SPEC_SECTION_MARKERS = [
     "product information overview",
     "product information",
@@ -144,6 +145,7 @@ KNOWN_SSD_OVERRIDES_BY_PRODUCT_CODE = {
 def normalize_text(text):
     text = unescape(text or "")
     text = text.replace('\u00a0', ' ').replace('\u2009', ' ').replace('\u202f', ' ')
+    text = text.replace('\u00ad', '').replace('\u200b', '').replace('\u200c', '').replace('\u200d', '')
     text = re.sub(r'[\u2010-\u2015\u2212]', '-', text)  # normalize dash variants
     text = re.sub(r'\s+', ' ', text).strip()
     return text
@@ -218,6 +220,10 @@ def storage_value_in_gb(raw_value, raw_unit):
     return value
 
 
+def is_reasonable_storage_value(value):
+    return isinstance(value, int) and 0 < value <= MAX_REASONABLE_STORAGE_GB
+
+
 def first_valid_ram_value(text):
     ram_patterns = [
         rf'(?<!\d)(?:20\d{{2}}[\s-]*)?(\d{{1,3}}){NUMBER_UNIT_SEP}{RAM_UNIT_PATTERN}[\s,;:()/-]*(?:(?:de|di|del|della|z|van)\s+)?(?:unified\s*memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|mémoire|zunifikowanej\s*pamięci|pamięci\s*ram|pamięć\s*ram|centraal\s*geheugen|geheugen|memoria\s*unificada|memoria\s*unificata|ram|memory|arbeitsspeicher)',
@@ -248,7 +254,9 @@ def first_valid_storage_value(text, category, device_type):
 
     for pattern in ssd_patterns:
         for match in re.finditer(pattern, text):
-            candidates.append((match.start(), storage_value_in_gb(match.group(1), match.group(2))))
+            storage_value = storage_value_in_gb(match.group(1), match.group(2))
+            if is_reasonable_storage_value(storage_value):
+                candidates.append((match.start(), storage_value))
 
     is_mac = category == 'mac' or device_type in MAC_DEVICE_TYPES
     if not candidates and is_mac:
@@ -257,7 +265,9 @@ def first_valid_storage_value(text, category, device_type):
             rf'[\s,;:()/-]*(?:von|de|del|di|z|da|van|o)?[\s,;:()/-]*(\d+){NUMBER_UNIT_SEP}{STORAGE_UNIT_PATTERN}'
         )
         for match in re.finditer(storage_capacity_pattern, text):
-            candidates.append((match.start(), storage_value_in_gb(match.group(1), match.group(2))))
+            storage_value = storage_value_in_gb(match.group(1), match.group(2))
+            if is_reasonable_storage_value(storage_value):
+                candidates.append((match.start(), storage_value))
 
     if not candidates:
         return None
@@ -266,13 +276,21 @@ def first_valid_storage_value(text, category, device_type):
     return candidates[0][1]
 
 
-def merge_specs(base, updates):
+def merge_specs(base, updates, prefer_updates=False):
     merged = dict(base)
     for key in ['ram', 'ssd', 'chip', 'screen']:
-        if merged.get(key) is None and updates.get(key) is not None:
-            merged[key] = updates[key]
+        update_value = updates.get(key)
+        if update_value is None:
+            continue
+
+        current_value = merged.get(key)
+        if prefer_updates or current_value is None:
+            merged[key] = update_value
     # Only replace generic type names
-    if merged.get('device_type') in [None, 'Device', 'Mac', 'iPad', 'iPhone', 'Apple Watch', 'Apple TV', 'Accessory']:
+    if prefer_updates:
+        if updates.get('device_type') and updates['device_type'] != 'Device':
+            merged['device_type'] = updates['device_type']
+    elif merged.get('device_type') in [None, 'Device', 'Mac', 'iPad', 'iPhone', 'Apple Watch', 'Apple TV', 'Accessory']:
         if updates.get('device_type') and updates['device_type'] != 'Device':
             merged['device_type'] = updates['device_type']
     return merged
@@ -299,6 +317,11 @@ def extract_detail_text_from_html(html):
     if soup.title and soup.title.get_text(strip=True):
         parts.append(soup.title.get_text(" ", strip=True))
 
+    tech_specs_parts = extract_tech_specs_text_from_html(html, soup)
+    if tech_specs_parts:
+        parts.extend(tech_specs_parts)
+        return normalize_text(" ".join(dedupe_text_parts(parts)))
+
     if soup.body:
         body_text = soup.body.get_text(" ", strip=True)
         if body_text:
@@ -316,6 +339,105 @@ def extract_detail_text_from_html(html):
         parts.append(desc_meta.get('content').replace('|', ' '))
 
     return normalize_text(" ".join(dedupe_text_parts(parts)))
+
+
+def extract_json_object_after_marker(text, marker):
+    marker_index = text.find(marker)
+    if marker_index == -1:
+        return None
+
+    start = text.find('{', marker_index + len(marker))
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escape_next = False
+
+    for idx in range(start, len(text)):
+        char = text[idx]
+
+        if in_string:
+            if escape_next:
+                escape_next = False
+            elif char == '\\':
+                escape_next = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0:
+                return text[start:idx + 1]
+
+    return None
+
+
+def html_fragment_to_text(fragment):
+    if not fragment:
+        return ""
+    return normalize_text(BeautifulSoup(fragment, 'html.parser').get_text(" ", strip=True))
+
+
+def extract_page_level_section_text(html, section_name):
+    payload = extract_json_object_after_marker(html, f"window.pageLevelData.{section_name} =")
+    if not payload:
+        return []
+
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return []
+
+    parts = []
+    section_title = data.get('sectionTitle')
+    if section_title:
+        parts.append(section_title)
+
+    groups = (((data.get('tiles') or {}).get('groups') or {}).get('items') or [])
+    for group_entry in groups:
+        value = group_entry.get('value') or {}
+
+        for key in ('mutiValueAttributeSelector', 'listOfAttributes'):
+            selector = value.get(key)
+            if not selector:
+                continue
+
+            group_title = selector.get('groupTitleFromAsset') or selector.get('groupTitleFromAttribute')
+            if group_title:
+                parts.append(group_title)
+
+            attributes = ((selector.get('attributeList') or {}).get('items') or [])
+            for attribute in attributes:
+                item_text = html_fragment_to_text(attribute.get('value'))
+                if item_text:
+                    parts.append(item_text)
+
+    return dedupe_text_parts(parts)
+
+
+def extract_tech_specs_dom_text(soup):
+    parts = []
+    tech_specs_section = soup.select_one('.rf-pdp-techspecssection') or soup.select_one('.TechSpecs-panel')
+    if not tech_specs_section:
+        return parts
+
+    section_text = normalize_text(tech_specs_section.get_text(" ", strip=True))
+    if section_text:
+        parts.append(section_text)
+    return parts
+
+
+def extract_tech_specs_text_from_html(html, soup):
+    parts = []
+    parts.extend(extract_page_level_section_text(html, "TechSpecs"))
+    parts.extend(extract_tech_specs_dom_text(soup))
+    return dedupe_text_parts(parts)
 
 
 def extract_detail_text(product_url):
@@ -430,7 +552,7 @@ def enrich_products_with_detail_specs(products, country_code, browser=None):
                     merged_specs = dict(product['specs'])
                     for detail_text in detail_texts:
                         detail_specs, _ = parse_specs(detail_text, product.get('category', 'mac'))
-                        merged_specs = merge_specs(merged_specs, detail_specs)
+                        merged_specs = merge_specs(merged_specs, detail_specs, prefer_updates=True)
                     if merged_specs != product['specs']:
                         product['specs'] = merged_specs
                         enriched += 1
