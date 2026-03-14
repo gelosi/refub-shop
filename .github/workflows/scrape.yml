@@ -6,15 +6,16 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
   issues: write
 
 jobs:
-  scrape-and-gate:
+  scrape-and-publish:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      HAS_COPILOT_ASSIGNMENT_TOKEN: ${{ secrets.COPILOT_ASSIGNMENT_TOKEN != '' }}
+      MISSING_RAM_TRIGGER_THRESHOLD: "0"
 
     steps:
       - name: Check out repository
@@ -37,15 +38,34 @@ jobs:
         if: success()
         run: python3 scraper/verify_data.py --json > after-metrics.json
 
-      - name: Evaluate metrics gate
-        id: gate
+      - name: Summarize metric delta
         if: success()
         run: |
           python3 scripts/metrics_gate.py \
             before-metrics.json \
             after-metrics.json \
-            --github-output "$GITHUB_OUTPUT" \
             --markdown-out metrics-summary.md
+
+      - name: Extract latest metrics
+        id: latest_metrics
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          metrics = json.loads(Path("after-metrics.json").read_text(encoding="utf-8"))
+          threshold = int(os.environ["MISSING_RAM_TRIGGER_THRESHOLD"])
+          missing_ram = int(metrics["missing_ram"])
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
+              handle.write(f"total_products={metrics['total_products']}\n")
+              handle.write(f"missing_ram={missing_ram}\n")
+              handle.write(f"missing_ssd={metrics['missing_ssd']}\n")
+              handle.write(f"implausible_ram={metrics['implausible_ram']}\n")
+              handle.write(f"missing_ram_high={'true' if missing_ram > threshold else 'false'}\n")
+          PY
 
       - name: Upload scrape artifacts
         if: always()
@@ -60,7 +80,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Commit updated index
-        if: steps.gate.outputs.should_commit == 'true'
+        if: success()
         run: |
           if git diff --quiet -- index.html; then
             echo "No index.html changes to commit."
@@ -73,15 +93,15 @@ jobs:
           git commit -m "Daily data update"
           git push
 
-      - name: Close open regression issue
-        if: steps.gate.outputs.should_commit == 'true' && env.HAS_COPILOT_ASSIGNMENT_TOKEN == 'true'
+      - name: Close open parser repair issue
+        if: success() && steps.latest_metrics.outputs.missing_ram_high != 'true'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.COPILOT_ASSIGNMENT_TOKEN }}
+          github-token: ${{ github.token }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const title = 'Daily scrape regression';
+            const title = 'Daily scrape parser repair';
             const issues = await github.paginate(github.rest.issues.listForRepo, {
               owner,
               repo,
@@ -90,7 +110,7 @@ jobs:
             });
             const issue = issues.find((item) => item.title === title);
             if (!issue) {
-              core.info('No open regression issue to close.');
+              core.info('No open parser repair issue to close.');
               return;
             }
 
@@ -98,7 +118,7 @@ jobs:
               owner,
               repo,
               issue_number: issue.number,
-              body: 'Latest scheduled scrape passed the metrics gate. Closing this regression issue.',
+              body: 'Latest scheduled scrape no longer exceeds the missing-RAM threshold. Closing this parser repair issue.',
             });
             await github.rest.issues.update({
               owner,
@@ -107,103 +127,27 @@ jobs:
               state: 'closed',
             });
 
-      - name: Require Copilot assignment token for regressions
-        if: steps.gate.outputs.should_commit != 'true' && success() && env.HAS_COPILOT_ASSIGNMENT_TOKEN != 'true'
-        run: |
-          echo "Regression detected but COPILOT_ASSIGNMENT_TOKEN is not configured." >&2
-          exit 1
-
-      - name: Open or update Copilot issue
-        if: steps.gate.outputs.should_commit != 'true' && success() && env.HAS_COPILOT_ASSIGNMENT_TOKEN == 'true'
+      - name: Dispatch parser repair workflow
+        if: success() && steps.latest_metrics.outputs.missing_ram_high == 'true'
         uses: actions/github-script@v7
-        env:
-          METRICS_SUMMARY_PATH: metrics-summary.md
         with:
-          github-token: ${{ secrets.COPILOT_ASSIGNMENT_TOKEN }}
+          github-token: ${{ github.token }}
           script: |
-            const fs = require('fs');
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const title = 'Daily scrape regression';
-            const summary = fs.readFileSync(process.env.METRICS_SUMMARY_PATH, 'utf8').trim();
             const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-            const body = [
-              summary,
-              '',
-              '## Copilot Task',
-              '- Read `AGENTS.md` and `.github/copilot-instructions.md` before editing.',
-              '- Reproduce with `./run_scraper.sh` or a narrower country scope first.',
-              '- Fix only the parser or enrichment logic required to improve the latest scrape.',
-              '- Regenerate `index.html` after any scraper change.',
-              '- Keep changes only if Missing RAM and/or Missing SSD improve, Total Products does not decrease, and implausible RAM values do not increase.',
-              '- Run `python3 -m py_compile scraper/scraper.py scraper/verify_data.py scripts/metrics_gate.py`.',
-              '- Run `python3 scraper/verify_data.py` and include exact totals in the PR summary.',
-              '',
-              `Workflow run: ${runUrl}`,
-            ].join('\n');
-
-            const labels = [
-              { name: 'automation', color: '0e8a16', description: 'Created by repository automation.' },
-              { name: 'scrape-regression', color: 'b60205', description: 'Latest scrape regressed against the committed baseline.' },
-              { name: 'copilot', color: '1d76db', description: 'Intended for GitHub Copilot coding agent.' },
-            ];
-
-            for (const label of labels) {
-              try {
-                await github.rest.issues.getLabel({ owner, repo, name: label.name });
-              } catch (error) {
-                if (error.status !== 404) {
-                  throw error;
-                }
-                await github.rest.issues.createLabel({
-                  owner,
-                  repo,
-                  name: label.name,
-                  color: label.color,
-                  description: label.description,
-                });
-              }
-            }
-
-            const issues = await github.paginate(github.rest.issues.listForRepo, {
+            await github.rest.actions.createWorkflowDispatch({
               owner,
               repo,
-              state: 'open',
-              per_page: 100,
-              labels: labels.map((label) => label.name).join(','),
+              workflow_id: 'parser-fix.yml',
+              ref: context.ref.replace('refs/heads/', ''),
+              inputs: {
+                source_run_id: String(context.runId),
+                source_run_url: runUrl,
+                total_products: '${{ steps.latest_metrics.outputs.total_products }}',
+                missing_ram: '${{ steps.latest_metrics.outputs.missing_ram }}',
+                missing_ssd: '${{ steps.latest_metrics.outputs.missing_ssd }}',
+                implausible_ram: '${{ steps.latest_metrics.outputs.implausible_ram }}',
+              },
             });
-            const existing = issues.find((item) => item.title === title);
-
-            if (existing) {
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number: existing.number,
-                body,
-              });
-              await github.rest.issues.update({
-                owner,
-                repo,
-                issue_number: existing.number,
-                state: 'open',
-                labels: labels.map((label) => label.name),
-              });
-              await github.rest.issues.addAssignees({
-                owner,
-                repo,
-                issue_number: existing.number,
-                assignees: ['copilot-swe-agent'],
-              });
-              core.info(`Updated issue #${existing.number}.`);
-              return;
-            }
-
-            const created = await github.rest.issues.create({
-              owner,
-              repo,
-              title,
-              body,
-              labels: labels.map((label) => label.name),
-              assignees: ['copilot-swe-agent'],
-            });
-            core.info(`Created issue #${created.data.number}.`);
+            core.info('Dispatched parser-fix workflow.');

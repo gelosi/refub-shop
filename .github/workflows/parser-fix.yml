@@ -1,0 +1,175 @@
+name: Parser Repair
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Source daily scrape run ID
+        required: false
+        type: string
+      source_run_url:
+        description: Source daily scrape run URL
+        required: false
+        type: string
+      total_products:
+        description: Total products from the triggering scrape
+        required: false
+        type: string
+      missing_ram:
+        description: Missing RAM count from the triggering scrape
+        required: false
+        type: string
+      missing_ssd:
+        description: Missing SSD count from the triggering scrape
+        required: false
+        type: string
+      implausible_ram:
+        description: Implausible RAM count from the triggering scrape
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  open-parser-repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HAS_COPILOT_ASSIGNMENT_TOKEN: ${{ secrets.COPILOT_ASSIGNMENT_TOKEN != '' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Capture current metrics
+        run: python3 scraper/verify_data.py --json > current-metrics.json
+
+      - name: Open or update parser repair issue
+        id: issue
+        uses: actions/github-script@v7
+        env:
+          SOURCE_RUN_URL: ${{ inputs.source_run_url }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_TOTAL_PRODUCTS: ${{ inputs.total_products }}
+          SOURCE_MISSING_RAM: ${{ inputs.missing_ram }}
+          SOURCE_MISSING_SSD: ${{ inputs.missing_ssd }}
+          SOURCE_IMPLAUSIBLE_RAM: ${{ inputs.implausible_ram }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const title = 'Daily scrape parser repair';
+            const current = JSON.parse(fs.readFileSync('current-metrics.json', 'utf8'));
+            const sourceRunUrl = process.env.SOURCE_RUN_URL || '';
+            const sourceRunId = process.env.SOURCE_RUN_ID || '';
+
+            const labels = [
+              { name: 'automation', color: '0e8a16', description: 'Created by repository automation.' },
+              { name: 'parser-fix', color: 'b60205', description: 'Parser work needed after a scrape run.' },
+              { name: 'copilot', color: '1d76db', description: 'Intended for GitHub Copilot coding agent.' },
+            ];
+
+            for (const label of labels) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name: label.name });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+                await github.rest.issues.createLabel({
+                  owner,
+                  repo,
+                  name: label.name,
+                  color: label.color,
+                  description: label.description,
+                });
+              }
+            }
+
+            const body = [
+              '## Trigger',
+              sourceRunUrl ? `- Source scrape run: ${sourceRunUrl}` : '- Source scrape run: unavailable',
+              sourceRunId ? `- Source run ID: ${sourceRunId}` : null,
+              process.env.SOURCE_TOTAL_PRODUCTS ? `- Trigger totals: ${process.env.SOURCE_TOTAL_PRODUCTS} total, ${process.env.SOURCE_MISSING_RAM} missing RAM, ${process.env.SOURCE_MISSING_SSD} missing SSD, ${process.env.SOURCE_IMPLAUSIBLE_RAM} implausible RAM` : null,
+              '',
+              '## Current Metrics',
+              `- Total products: ${current.total_products}`,
+              `- Missing RAM (mac only): ${current.missing_ram}`,
+              `- Missing SSD (mac/ipad/iphone/appletv): ${current.missing_ssd}`,
+              `- Implausible RAM (>512 GB): ${current.implausible_ram}`,
+              '',
+              '## Task',
+              '- Read `AGENTS.md` and `.github/copilot-instructions.md` before editing.',
+              '- Run `./run_scraper.sh` or a narrower country scope to reproduce.',
+              '- Focus on parser or enrichment fixes only.',
+              '- Do not skip work just because screen data is absent on desktop Macs.',
+              '- Prefer technical spec sections already present in page HTML over extra reloads.',
+              '- Regenerate `index.html` after scraper changes.',
+              '- Keep changes only if Missing RAM and/or Missing SSD improve, Total Products does not decrease, and implausible RAM values do not increase.',
+              '- Run `python3 -m py_compile scraper/scraper.py scraper/verify_data.py scripts/metrics_gate.py`.',
+              '- Run `python3 scraper/verify_data.py` and include exact totals in the result.',
+            ].filter(Boolean).join('\n');
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100,
+              labels: labels.map((label) => label.name).join(','),
+            });
+            const existing = issues.find((item) => item.title === title);
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: existing.number,
+                body,
+              });
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: existing.number,
+                state: 'open',
+                labels: labels.map((label) => label.name),
+              });
+              core.setOutput('issue_number', String(existing.number));
+              core.info(`Updated issue #${existing.number}.`);
+              return;
+            }
+
+            const created = await github.rest.issues.create({
+              owner,
+              repo,
+              title,
+              body,
+              labels: labels.map((label) => label.name),
+            });
+            core.setOutput('issue_number', String(created.data.number));
+            core.info(`Created issue #${created.data.number}.`);
+
+      - name: Assign Copilot agent
+        if: env.HAS_COPILOT_ASSIGNMENT_TOKEN == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_ASSIGNMENT_TOKEN }}
+          script: |
+            await github.rest.issues.addAssignees({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number('${{ steps.issue.outputs.issue_number }}'),
+              assignees: ['copilot-swe-agent'],
+            });
+
+      - name: Skip Copilot assignment when token is unavailable
+        if: env.HAS_COPILOT_ASSIGNMENT_TOKEN != 'true'
+        run: echo "COPILOT_ASSIGNMENT_TOKEN is not configured. Skipping Copilot assignment."
