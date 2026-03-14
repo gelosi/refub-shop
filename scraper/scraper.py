@@ -102,6 +102,36 @@ MAC_DEVICE_TYPES = {'Mac', 'MacBook Air', 'MacBook Pro', 'Mac mini', 'iMac', 'Ma
 MACBOOK_TYPES = {'MacBook Air', 'MacBook Pro'}
 SCREEN_BUCKET_DEVICE_TYPES = {'MacBook Air', 'MacBook Pro', 'iMac', 'iPad', 'iPad Pro', 'iPad Air', 'iPad mini'}
 NUMBER_UNIT_SEP = r'\s*(?:-\s*)?'
+FOOTNOTE_SUFFIX = r'(?:[0-9¹²³⁴⁵⁶⁷⁸⁹]+)?'
+RAM_UNIT_PATTERN = rf'(?:gb|go){FOOTNOTE_SUFFIX}(?![a-z])'
+STORAGE_UNIT_PATTERN = rf'(gb|go|tb|to){FOOTNOTE_SUFFIX}(?![a-z])'
+DETAIL_SPEC_SECTION_WINDOW = 1800
+DETAIL_FETCH_RETRIES = 3
+DETAIL_FETCH_BACKOFF_SECONDS = 0.75
+DETAIL_SPEC_SECTION_MARKERS = [
+    "product information overview",
+    "product information",
+    "tech specs",
+    "produktinformationen überblick",
+    "produktinformationen",
+    "technische daten",
+    "informations produit présentation",
+    "informations produit",
+    "caractéristiques techniques",
+    "productinformatie overzicht",
+    "productinformatie",
+    "technische specificaties",
+    "informazioni sul prodotto panoramica",
+    "informazioni sul prodotto",
+    "specifiche tecniche",
+    "información del producto descripción",
+    "información del producto",
+    "especificaciones técnicas",
+    "informacje o produkcie omówienie",
+    "informacje o produkcie",
+    "dane techniczne",
+    "specyfikacja techniczna",
+]
 KNOWN_SSD_OVERRIDES_BY_PRODUCT_CODE = {
     # iMac M4 8-core CPU / 8-core GPU listings where storage is intermittently absent in localized detail text.
     "fwue3ze": 256,
@@ -141,6 +171,101 @@ def sanitize_ram_value(raw_value):
     return None
 
 
+def dedupe_text_parts(parts):
+    deduped = []
+    seen = set()
+
+    for part in parts:
+        normalized = normalize_text(part)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+
+    return deduped
+
+
+def extract_prioritized_detail_sections(body_text):
+    normalized_body = normalize_text(body_text)
+    lowered = normalized_body.lower()
+    sections = []
+    seen_ranges = set()
+
+    for marker in DETAIL_SPEC_SECTION_MARKERS:
+        start = 0
+        while True:
+            idx = lowered.find(marker, start)
+            if idx == -1:
+                break
+
+            window_start = idx
+            window_end = min(len(normalized_body), idx + DETAIL_SPEC_SECTION_WINDOW)
+            window_key = (window_start, window_end)
+            if window_key not in seen_ranges:
+                seen_ranges.add(window_key)
+                sections.append(normalized_body[window_start:window_end])
+
+            start = idx + len(marker)
+
+    return dedupe_text_parts(sections)
+
+
+def storage_value_in_gb(raw_value, raw_unit):
+    value = int(raw_value)
+    unit = raw_unit.lower()
+    if unit in {'tb', 'to'}:
+        value *= 1024
+    return value
+
+
+def first_valid_ram_value(text):
+    ram_patterns = [
+        rf'(?<!\d)(?:20\d{{2}}[\s-]*)?(\d{{1,3}}){NUMBER_UNIT_SEP}{RAM_UNIT_PATTERN}[\s,;:()/-]*(?:(?:de|di|del|della|z|van)\s+)?(?:unified\s*memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|mémoire|zunifikowanej\s*pamięci|pamięci\s*ram|pamięć\s*ram|centraal\s*geheugen|geheugen|memoria\s*unificada|memoria\s*unificata|ram|memory|arbeitsspeicher)',
+        rf'(?:(?:ram|memory|arbeitsspeicher|mémoire|pamięć|pamięci|geheugen|memoria)\s*)[:\-]\s*(?<!\d)(\d{{1,4}}){NUMBER_UNIT_SEP}{RAM_UNIT_PATTERN}',
+    ]
+
+    candidates = []
+    for pattern in ram_patterns:
+        for match in re.finditer(pattern, text):
+            ram_value = sanitize_ram_value(int(match.group(1)))
+            if ram_value is not None:
+                candidates.append((match.start(), ram_value))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
+def first_valid_storage_value(text, category, device_type):
+    ssd_keywords = r'(?:ssd(?:\s*-\s*opslag)?|flash\s*storage|massenspeicher|stockage|opslag|almacenamiento|archiviazione|lagring|úložiště|pamięci\s*masowej|storage|speicherplatz)'
+    ssd_patterns = [
+        rf'{ssd_keywords}[\s,;:()/-]*(?:von|de|del|di|z|da|van)?\s*(\d+){NUMBER_UNIT_SEP}{STORAGE_UNIT_PATTERN}',
+        rf'(\d+){NUMBER_UNIT_SEP}{STORAGE_UNIT_PATTERN}\b[\s,;:()/-]*{ssd_keywords}',
+    ]
+    candidates = []
+
+    for pattern in ssd_patterns:
+        for match in re.finditer(pattern, text):
+            candidates.append((match.start(), storage_value_in_gb(match.group(1), match.group(2))))
+
+    is_mac = category == 'mac' or device_type in MAC_DEVICE_TYPES
+    if not candidates and is_mac:
+        storage_capacity_pattern = (
+            rf'(?:storage|opslag|stockage|massenspeicher|speicherplatz|almacenamiento|archiviazione|pamięci\s*masowej|pojemno(?:ść|sci)|capacity|capacità|capaciteit|kapazität|capacité)'
+            rf'[\s,;:()/-]*(?:von|de|del|di|z|da|van|o)?[\s,;:()/-]*(\d+){NUMBER_UNIT_SEP}{STORAGE_UNIT_PATTERN}'
+        )
+        for match in re.finditer(storage_capacity_pattern, text):
+            candidates.append((match.start(), storage_value_in_gb(match.group(1), match.group(2))))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
 def merge_specs(base, updates):
     merged = dict(base)
     for key in ['ram', 'ssd', 'chip', 'screen']:
@@ -174,14 +299,10 @@ def extract_detail_text_from_html(html):
     if soup.title and soup.title.get_text(strip=True):
         parts.append(soup.title.get_text(" ", strip=True))
 
-    desc_meta = soup.find('meta', attrs={'name': 'description'}) or soup.find('meta', attrs={'property': 'og:description'})
-    if desc_meta and desc_meta.get('content'):
-        parts.append(desc_meta.get('content').replace('|', ' '))
-
-    # Meta description is often generic; include visible body text to capture localized RAM/SSD lines.
     if soup.body:
         body_text = soup.body.get_text(" ", strip=True)
         if body_text:
+            parts.extend(extract_prioritized_detail_sections(body_text))
             parts.append(body_text[:20000])
 
     # Structured data can include storage fields that are not visible in normal copy.
@@ -190,22 +311,47 @@ def extract_detail_text_from_html(html):
         if script_text:
             parts.append(script_text[:12000])
 
-    return normalize_text(" ".join(parts))
+    desc_meta = soup.find('meta', attrs={'name': 'description'}) or soup.find('meta', attrs={'property': 'og:description'})
+    if desc_meta and desc_meta.get('content'):
+        parts.append(desc_meta.get('content').replace('|', ' '))
+
+    return normalize_text(" ".join(dedupe_text_parts(parts)))
 
 
 def extract_detail_text(product_url):
-    req = urllib.request.Request(product_url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=30) as response:
-        html = response.read().decode('utf-8', errors='ignore')
-    return extract_detail_text_from_html(html)
+    last_error = None
+    for attempt in range(DETAIL_FETCH_RETRIES):
+        try:
+            req = urllib.request.Request(product_url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                html = response.read().decode('utf-8', errors='ignore')
+            return extract_detail_text_from_html(html)
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 < DETAIL_FETCH_RETRIES:
+                time.sleep(DETAIL_FETCH_BACKOFF_SECONDS * (attempt + 1))
+    raise last_error
 
 
 def extract_detail_text_playwright(page, product_url):
-    page.goto(product_url, timeout=60000, wait_until="domcontentloaded")
-    for _ in range(3):
-        page.evaluate("window.scrollBy(0, 1200)")
-        time.sleep(0.2)
-    return extract_detail_text_from_html(page.content())
+    last_error = None
+    for attempt in range(DETAIL_FETCH_RETRIES):
+        try:
+            page.goto(product_url, timeout=60000, wait_until="domcontentloaded")
+            for _ in range(3):
+                page.evaluate("window.scrollBy(0, 1200)")
+                time.sleep(0.2)
+            time.sleep(0.4)
+            return extract_detail_text_from_html(page.content())
+        except Exception as exc:
+            last_error = exc
+            try:
+                page.goto("about:blank", timeout=10000, wait_until="domcontentloaded")
+            except Exception:
+                pass
+            if attempt + 1 < DETAIL_FETCH_RETRIES:
+                time.sleep(DETAIL_FETCH_BACKOFF_SECONDS * (attempt + 1))
+    raise last_error
 
 
 def needs_detail_enrichment(product):
@@ -214,7 +360,9 @@ def needs_detail_enrichment(product):
     device_type = specs.get('device_type')
 
     if category == 'mac':
-        return specs.get('ram') is None or specs.get('ssd') is None or specs.get('screen') is None
+        if specs.get('ram') is None or specs.get('ssd') is None:
+            return True
+        return supports_screen_buckets(device_type) and specs.get('screen') is None
 
     if category in ['ipad', 'iphone', 'appletv'] and specs.get('ssd') is None:
         return True
@@ -222,6 +370,19 @@ def needs_detail_enrichment(product):
     # Accessories and watches should not force RAM/SSD enrichment.
     if category in ['watch', 'accessories'] or device_type in ACCESSORY_TYPES:
         return False
+    return False
+
+
+def needs_retry_detail_enrichment(product):
+    specs = product.get('specs', {})
+    category = product.get('category')
+
+    if category == 'mac':
+        return specs.get('ram') is None or specs.get('ssd') is None
+
+    if category in ['ipad', 'iphone', 'appletv']:
+        return specs.get('ssd') is None
+
     return False
 
 
@@ -281,6 +442,22 @@ def enrich_products_with_detail_specs(products, country_code, browser=None):
 
     print(f"  Detail enrichment ({country_code}): updated {enriched} products")
     return errors
+
+
+def retry_unresolved_detail_specs(products):
+    unresolved = [p for p in products if needs_retry_detail_enrichment(p)]
+    if not unresolved:
+        return []
+
+    print(f"Running sequential retry enrichment for {len(unresolved)} unresolved products...")
+    playwright = sync_playwright().start()
+    browser = playwright.chromium.launch(headless=True)
+
+    try:
+        return enrich_products_with_detail_specs(unresolved, "RETRY", browser)
+    finally:
+        browser.close()
+        playwright.stop()
 
 
 def format_screen_value(screen):
@@ -525,58 +702,17 @@ def parse_specs(text, category='mac'):
 
     # RAM (Mostly for Mac)
     if not is_accessory and (category == 'mac' or specs['device_type'] in MAC_DEVICE_TYPES):
-        ram_patterns = [
-            rf'(?<!\d)(?:20\d{{2}}[\s-]*)?(\d{{1,3}}){NUMBER_UNIT_SEP}(?:gb|go)\b[\s,;:()/-]*(?:(?:de|di|del|della|z|van)\s+)?(?:unified\s*memory|gemeinsamer\s*arbeitsspeicher|mémoire\s*unifiée|mémoire|zunifikowanej\s*pamięci|pamięci\s*ram|pamięć\s*ram|centraal\s*geheugen|geheugen|memoria\s*unificada|memoria\s*unificata|ram|memory|arbeitsspeicher)',
-            rf'(?:(?:ram|memory|arbeitsspeicher|mémoire|pamięć|pamięci|geheugen|memoria)\s*)[:\-]\s*(?<!\d)(\d{{1,4}}){NUMBER_UNIT_SEP}(?:gb|go)\b',
-        ]
-
-        for pattern in ram_patterns:
-            ram_match = re.search(pattern, text)
-            if ram_match:
-                specs['ram'] = sanitize_ram_value(int(ram_match.group(1)))
-                break
+        specs['ram'] = first_valid_ram_value(text)
 
     # SSD
     if not is_accessory:
-        ssd_keywords = r'(?:ssd(?:\s*-\s*opslag)?|flash\s*storage|massenspeicher|stockage|opslag|almacenamiento|archiviazione|lagring|úložiště|pamięci\s*masowej|storage|speicherplatz)'
-        ssd_match = re.search(
-            rf'{ssd_keywords}[\s,;:()/-]*(?:von|de|del|di|z|da|van)?\s*(\d+){NUMBER_UNIT_SEP}(?:gb|go|tb|to)\b',
-            text
-        )
-        if not ssd_match:
-            ssd_match = re.search(
-                rf'(\d+){NUMBER_UNIT_SEP}(?:gb|go|tb|to)\b[\s,;:()/-]*{ssd_keywords}',
-                text
-            )
-            
-        if ssd_match:
-            val = int(ssd_match.group(1))
-            full_match = ssd_match.group(0)
-            if 'tb' in full_match or 'to' in full_match:
-                val *= 1024
-            specs['ssd'] = val
+        specs['ssd'] = first_valid_storage_value(text, category, specs['device_type'])
         
         # Allow simple GB search for iPad/iPhone/AppleTV if no "SSD" keyword found
         if specs['ssd'] is None and category in ['ipad', 'iphone', 'appletv']:
-            simple_gb = re.search(r'(\d+)\s*(?:gb|go|tb|to)', text)
+            simple_gb = re.search(rf'(\d+){NUMBER_UNIT_SEP}{STORAGE_UNIT_PATTERN}', text)
             if simple_gb:
-                val = int(simple_gb.group(1))
-                if 'tb' in simple_gb.group(0) or 'to' in simple_gb.group(0):
-                    val *= 1024
-                specs['ssd'] = val
-
-        # Mac fallback for capacity-style wording that may omit explicit "SSD" token.
-        if specs['ssd'] is None and (category == 'mac' or specs['device_type'] in MAC_DEVICE_TYPES):
-            storage_capacity = re.search(
-                rf'(?:storage|opslag|stockage|massenspeicher|speicherplatz|almacenamiento|archiviazione|pamięci\s*masowej|pojemno(?:ść|sci)|capacity|capacità|capaciteit|kapazität|capacité)[\s,;:()/-]*(?:von|de|del|di|z|da|van|o)?[\s,;:()/-]*(\d+){NUMBER_UNIT_SEP}(?:gb|go|tb|to)\b',
-                text
-            )
-            if storage_capacity:
-                val = int(storage_capacity.group(1))
-                full_match = storage_capacity.group(0)
-                if 'tb' in full_match or 'to' in full_match:
-                    val *= 1024
-                specs['ssd'] = val
+                specs['ssd'] = storage_value_in_gb(simple_gb.group(1), simple_gb.group(2))
 
     # Chip
     # M-series
@@ -1019,7 +1155,8 @@ def main():
             except Exception as e:
                 print(f"Failed to fetch {country}: {e}")
                 master_errors.append(f"CRITICAL: Failed to fetch {country}: {e}")
-                
+
+    master_errors.extend(retry_unresolved_detail_specs(all_items))
     generate_html(all_items)
     
     # --- Statistics Output ---
