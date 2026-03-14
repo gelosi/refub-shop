@@ -1000,6 +1000,7 @@ def generate_html(all_products):
         }}
         .header {{ text-align: center; margin-bottom: 30px; }}
         .header h1 {{ margin-bottom: 10px; }}
+        .theme-control {{ margin-top: 12px; }}
         .controls {{ display: flex; gap: 15px; justify-content: center; margin-bottom: 20px; flex-wrap: wrap; }}
         select {{ padding: 8px; border-radius: 8px; border: 1px solid var(--panel-border); font-size: 14px; background: var(--panel); color: var(--text); }}
         .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; max-width: 1200px; margin: 0 auto; }}
@@ -1040,6 +1041,13 @@ def generate_html(all_products):
         <h1>Apple Refurbished Tracker</h1>
         <p>Tracking {len(all_products)} items across {len(countries)} countries</p>
         <p style="font-size: 14px; color: var(--muted); margin-top: 5px;">Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        <div class="theme-control">
+            <select id="themeFilter" onchange="setTheme(this.value)">
+                <option value="system">Theme: System</option>
+                <option value="light">Theme: Light</option>
+                <option value="dark">Theme: Dark</option>
+            </select>
+        </div>
     </div>
 
     <div class="controls">
@@ -1066,11 +1074,6 @@ def generate_html(all_products):
         <select id="sortFilter" onchange="renderGrid()">
             <option value="price_asc">Price: Low to High</option>
             <option value="price_desc">Price: High to Low</option>
-        </select>
-        <select id="themeFilter" onchange="setTheme(this.value)">
-            <option value="system">Theme: System</option>
-            <option value="light">Theme: Light</option>
-            <option value="dark">Theme: Dark</option>
         </select>
     </div>
 
