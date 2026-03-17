@@ -1277,6 +1277,7 @@ def generate_html(all_products):
             if (!screen) return null;
             const value = Number(screen);
             if (value >= 12.7 && value < 14) return 13;
+            if (value >= 23 && value < 25) return 24;
             if (value < 20) return Math.floor(value);
             return null;
         }}
