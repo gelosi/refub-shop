@@ -100,9 +100,9 @@ LISTING_TILE_SELECTOR = ".rf-refurb-producttile"
 TECH_SPECS_SELECTOR = ".rf-pdp-techspecssection, .TechSpecs-panel"
 
 ACCESSORY_TYPES = {'Apple Pencil', 'Keyboard', 'Mouse', 'Trackpad', 'HomePod', 'AirPods', 'Display', 'Accessory'}
-MAC_DEVICE_TYPES = {'Mac', 'MacBook Air', 'MacBook Pro', 'Mac mini', 'iMac', 'Mac Studio', 'Mac Pro'}
-MACBOOK_TYPES = {'MacBook Air', 'MacBook Pro'}
-SCREEN_BUCKET_DEVICE_TYPES = {'MacBook Air', 'MacBook Pro', 'iMac', 'iPad', 'iPad Pro', 'iPad Air', 'iPad mini'}
+MAC_DEVICE_TYPES = {'Mac', 'MacBook Air', 'MacBook Pro', 'MacBook Neo', 'MacBook', 'Mac mini', 'iMac', 'Mac Studio', 'Mac Pro'}
+MACBOOK_TYPES = {'MacBook Air', 'MacBook Pro', 'MacBook Neo', 'MacBook'}
+SCREEN_BUCKET_DEVICE_TYPES = {'MacBook Air', 'MacBook Pro', 'MacBook Neo', 'MacBook', 'iMac', 'iPad', 'iPad Pro', 'iPad Air', 'iPad mini'}
 GENERIC_DEVICE_TYPES = {'Mac', 'iPad', 'iPhone', 'Apple Watch', 'Apple TV', 'Accessory'}
 NUMBER_UNIT_SEP = r'\s*(?:-\s*)?'
 FOOTNOTE_SUFFIX = r'(?:[0-9¹²³⁴⁵⁶⁷⁸⁹]+)?'
@@ -839,6 +839,8 @@ def fetch_store_data(country_code, config):
                     price = 0
                     price_text = ""
                     price_elem = tile.select_one('span.rf-refurb-producttile-currentprice')
+                    if not price_elem:
+                        price_elem = tile.select_one('[data-autom="full-price"]')
                     if price_elem:
                         price_text = price_elem.get_text(strip=True)
                         # Clean price
@@ -923,6 +925,8 @@ def parse_specs(text, category='mac'):
     # Detect Macs first as they often contain accessory names in their specs
     if 'macbook air' in text: specs['device_type'] = 'MacBook Air'
     elif 'macbook pro' in text: specs['device_type'] = 'MacBook Pro'
+    elif 'macbook neo' in text: specs['device_type'] = 'MacBook Neo'
+    elif 'macbook' in text: specs['device_type'] = 'MacBook'
     elif 'mac mini' in text: specs['device_type'] = 'Mac mini'
     elif 'imac' in text: specs['device_type'] = 'iMac'
     elif 'mac studio' in text: specs['device_type'] = 'Mac Studio'
@@ -1286,6 +1290,8 @@ def generate_html(all_products):
             return [
                 'MacBook Air',
                 'MacBook Pro',
+                'MacBook Neo',
+                'MacBook',
                 'iMac',
                 'iPad',
                 'iPad Pro',
@@ -1345,7 +1351,7 @@ def generate_html(all_products):
                 
                 let specList = [];
                 if (p.specs.chip) specList.push(p.specs.chip);
-                if (p.specs.screen && (p.specs.device_type === 'MacBook Air' || p.specs.device_type === 'MacBook Pro' || p.specs.device_type === 'iMac' || p.specs.device_type === 'Display')) specList.push(formatScreen(p.specs.screen) + ' Display');
+                if (p.specs.screen && (['MacBook Air', 'MacBook Pro', 'MacBook Neo', 'MacBook', 'iMac', 'Display'].includes(p.specs.device_type))) specList.push(formatScreen(p.specs.screen) + ' Display');
                 if (p.specs.ram) specList.push(p.specs.ram + ' GB RAM');
                 if (p.specs.ssd) specList.push(formatSSD(p.specs.ssd) + ' SSD');
                 
