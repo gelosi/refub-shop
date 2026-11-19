@@ -141,6 +141,10 @@
         .chip { display: inline-block; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--frame-accent); font-size: 12px; font-weight: 600; margin: 0 4px 4px 0; white-space: nowrap; }
         a.chip:hover { border-color: var(--accent); color: var(--accent); }
         .best-badge { color: var(--price); font-weight: 600; }
+        .pick-empty { opacity: 0.6; }
+        .pick-empty .image-container { color: var(--muted); font-size: 13px; }
+        .pick-where { font-size: 12px; color: var(--muted); margin-top: 10px; }
+        .pick-where .chip { color: var(--text); margin: 4px 4px 0 0; }
         .country-cats { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px 32px; }
         .country-cats h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin: 6px 0; }
         .cat-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--panel-border); font-size: 14px; }
@@ -169,13 +173,19 @@
         <p>Tracking 1109 items across 11 countries</p>
         <p style="font-size: 14px; color: var(--muted); margin-top: 5px;">Last Updated: 2026-11-18 17:02:29</p>
         <nav class="view-nav">
+            <a href="#overview" data-nav="overview">Overview</a>
             <a href="#all" data-nav="all">All products</a>
             <a href="#best" data-nav="best">Best prices</a>
             <a href="#countries" data-nav="countries">Country review</a>
         </nav>
     </div>
 
-    <div class="controls" data-view="all">
+    <div class="view" data-view="overview">
+        <p class="view-note">The cheapest offer in each product line across all countries, compared in EUR.</p>
+        <div id="overviewContent" class="grid"></div>
+    </div>
+
+    <div class="controls" data-view="all" hidden>
         <select id="countryFilter" onchange="renderGrid()">
             <option value="All">All Countries</option>
             <option value="AT">AT</option><option value="BE">BE</option><option value="CH">CH</option><option value="DE">DE</option><option value="ES">ES</option><option value="FR">FR</option><option value="IE">IE</option><option value="IT">IT</option><option value="NL">NL</option><option value="PL">PL</option><option value="UK">UK</option>
@@ -202,7 +212,7 @@
         </select>
     </div>
 
-    <div id="grid" class="grid" data-view="all"></div>
+    <div id="grid" class="grid" data-view="all" hidden></div>
 
     <div class="view" data-view="best" hidden>
         <p class="view-note">Where each device is cheapest right now. Prices are compared in EUR; the specs shown are those of the cheapest offer.</p>
@@ -529,15 +539,71 @@
             document.getElementById('countriesContent').innerHTML = html.join('') || '<p class="view-note">No products found.</p>';
         }
 
+        // Product lines shown on the overview (landing) view, in display order.
+        const MACBOOK_NON_PRO = ['MacBook Air', 'MacBook Neo', 'MacBook'];
+        const OVERVIEW_SLOTS = [
+            { label: 'iPhone', match: p => p.category === 'iphone' },
+            { label: 'iPad', match: p => p.category === 'ipad' },
+            { label: 'Apple Watch', match: p => p.category === 'watch' },
+            { label: 'MacBook', match: p => MACBOOK_NON_PRO.includes(p.specs.device_type) },
+            { label: 'MacBook Pro', match: p => p.specs.device_type === 'MacBook Pro' },
+            { label: 'iMac', match: p => p.specs.device_type === 'iMac' },
+            { label: 'Mac mini', match: p => p.specs.device_type === 'Mac mini' },
+            { label: 'Mac Studio', match: p => p.specs.device_type === 'Mac Studio' },
+            { label: 'External display', match: p => p.specs.device_type === 'Display' },
+        ];
+
+        function renderOverview() {
+            const html = OVERVIEW_SLOTS.map(slot => {
+                // Cheapest offer per country, then every country tied for the lowest price.
+                const perCountry = {};
+                products.forEach(p => {
+                    if (!(p.price > 0) || !slot.match(p)) return;
+                    const current = perCountry[p.country];
+                    if (!current || p.price < current.price) perCountry[p.country] = p;
+                });
+                const ranked = Object.values(perCountry).sort((a, b) => a.price - b.price || a.country.localeCompare(b.country));
+                if (!ranked.length) {
+                    return `<div class="card pick-empty">
+                        <div class="image-container">No offers right now</div>
+                        <div class="content"><div class="category-label">Cheapest ${esc(slot.label)}</div></div>
+                    </div>`;
+                }
+                const best = ranked[0];
+                const winners = ranked.filter(p => p.price - best.price < PRICE_EPSILON);
+                const original = originalPriceText(best);
+                const chips = winners.map(p =>
+                    `<a class="chip" href="${esc(p.url)}" target="_blank" title="${esc(p.name)}">${esc(winners.length <= 2 ? countryName(p.country) : p.country)}</a>`
+                ).join('');
+                return `<div class="card">
+                    <a class="image-container" href="${esc(best.url)}" target="_blank">
+                        <img src="${esc(best.image)}" alt="${esc(best.name)}" loading="lazy">
+                    </a>
+                    <div class="content">
+                        <div class="category-label">Cheapest ${esc(slot.label)}</div>
+                        <a class="title" href="${esc(best.url)}" target="_blank">${esc(best.name)}</a>
+                        <div class="specs">${esc(specParts(best).join(' • '))}</div>
+                        <div class="price-row">
+                            <div class="price">${eur(best.price)}</div>
+                            ${original ? `<div class="price-eur">${esc(original)}</div>` : ''}
+                        </div>
+                        <div class="pick-where">Cheapest in<br>${chips}</div>
+                    </div>
+                </div>`;
+            }).join('');
+            document.getElementById('overviewContent').innerHTML = html;
+        }
+
         function currentView() {
             const view = location.hash.replace('#', '');
-            return ['best', 'countries'].includes(view) ? view : 'all';
+            return ['all', 'best', 'countries'].includes(view) ? view : 'overview';
         }
 
         function renderView() {
             const view = currentView();
             document.querySelectorAll('[data-view]').forEach(el => { el.hidden = el.dataset.view !== view; });
             document.querySelectorAll('.view-nav a').forEach(a => a.classList.toggle('active', a.dataset.nav === view));
+            if (view === 'overview') renderOverview();
             if (view === 'best') renderBest();
             if (view === 'countries') renderCountries();
         }

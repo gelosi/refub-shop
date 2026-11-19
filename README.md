@@ -27,6 +27,7 @@ The scraper currently supports these stores:
 - A single generated `index.html` file
 - Browsing by country, category, device, RAM, and storage
 - Prices normalized to EUR
+- "Overview" landing view: the cheapest iPhone, iPad, Watch, MacBook, MacBook Pro, iMac, Mac mini, Mac Studio and external display across all countries
 - "Best prices" view (`#best`): the country where each device is cheapest
 - "Country review" view (`#countries`): the cheapest offer per device in each country, grouped by category
 - Direct links to the Apple product pages
