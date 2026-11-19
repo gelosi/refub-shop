@@ -27,6 +27,8 @@ The scraper currently supports these stores:
 - A single generated `index.html` file
 - Browsing by country, category, device, RAM, and storage
 - Prices normalized to EUR
+- "Best prices" view (`#best`): the country where each device is cheapest
+- "Country review" view (`#countries`): the cheapest offer per device in each country, grouped by category
 - Direct links to the Apple product pages
 
 ## Running It

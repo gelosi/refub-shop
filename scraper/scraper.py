@@ -1027,6 +1027,270 @@ def parse_specs(text, category='mac'):
 
     return specs, text 
 
+COUNTRY_NAMES = {
+    "DE": "Germany",
+    "IE": "Ireland",
+    "NL": "Netherlands",
+    "FR": "France",
+    "PL": "Poland",
+    "AT": "Austria",
+    "ES": "Spain",
+    "CH": "Switzerland",
+    "IT": "Italy",
+    "BE": "Belgium",
+    "UK": "United Kingdom",
+}
+
+CATEGORY_LABELS = {
+    "mac": "Mac",
+    "ipad": "iPad",
+    "iphone": "iPhone",
+    "watch": "Apple Watch",
+    "appletv": "Apple TV",
+    "accessories": "Accessories",
+}
+
+# CSS/JS for the "Best prices" and "Country review" views. Kept as plain strings
+# (not f-strings) so braces do not need escaping; both views are computed in the
+# browser from the same embedded `products` array as the main grid.
+VIEWS_CSS = r"""
+        [hidden] { display: none !important; }
+        .view-nav { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 14px; }
+        .view-nav a { padding: 6px 14px; border-radius: 999px; border: 1px solid var(--panel-border); background: var(--panel); font-size: 14px; color: var(--muted); }
+        .view-nav a:hover { border-color: var(--frame-accent); color: var(--text); }
+        .view-nav a.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+        .view { max-width: 1200px; margin: 0 auto; }
+        .view-note { text-align: center; font-size: 13px; color: var(--muted); margin: 0 0 20px; }
+        .panel { background: linear-gradient(180deg, var(--card-grad-1), var(--card-grad-2)); border: 1px solid var(--panel-border); border-radius: 18px; box-shadow: 0 8px 26px rgba(0,0,0,0.12); padding: 18px 20px; margin-bottom: 20px; }
+        .panel h2 { margin: 0; font-size: 18px; }
+        .panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+        .table-wrap { overflow-x: auto; }
+        .best-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        .best-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); padding: 8px 10px; white-space: nowrap; }
+        .best-table td { padding: 10px; border-top: 1px solid var(--panel-border); vertical-align: top; }
+        .best-table td.num { white-space: nowrap; }
+        .sub { font-size: 12px; color: var(--muted); }
+        .link { color: var(--accent); font-weight: 600; }
+        .link:hover { text-decoration: underline; }
+        .chip { display: inline-block; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--frame-accent); font-size: 12px; font-weight: 600; margin: 0 4px 4px 0; white-space: nowrap; }
+        a.chip:hover { border-color: var(--accent); color: var(--accent); }
+        .best-badge { color: var(--price); font-weight: 600; }
+        .country-cats { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px 32px; }
+        .country-cats h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin: 6px 0; }
+        .cat-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--panel-border); font-size: 14px; }
+        .cat-row:hover .cat-name { color: var(--accent); }
+        .cat-name { font-weight: 600; }
+        .cat-price { text-align: right; white-space: nowrap; }
+        @media (max-width: 900px) {
+            .attribution { position: static; flex-direction: row; justify-content: space-between; align-items: center; text-align: left; margin-bottom: 12px; }
+        }
+"""
+
+VIEWS_JS = r"""
+        const PRICE_EPSILON = 0.005;
+
+        function esc(value) {
+            return String(value == null ? '' : value).replace(/[&<>"']/g, c => (
+                {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]
+            ));
+        }
+
+        function eur(value) {
+            return '€' + value.toFixed(2);
+        }
+
+        function countryName(code) {
+            return COUNTRY_NAMES[code] || code;
+        }
+
+        function categoryLabel(category) {
+            return CATEGORY_LABELS[category] || category;
+        }
+
+        function presentCategories() {
+            const present = new Set(products.map(p => p.category));
+            const ordered = CATEGORY_ORDER.filter(c => present.has(c));
+            present.forEach(c => { if (!ordered.includes(c)) ordered.push(c); });
+            return ordered;
+        }
+
+        function specParts(p) {
+            const parts = [];
+            if (p.specs.chip) parts.push(p.specs.chip);
+            if (p.specs.screen && (['MacBook Air', 'MacBook Pro', 'MacBook Neo', 'MacBook', 'iMac', 'Display'].includes(p.specs.device_type))) parts.push(formatScreen(p.specs.screen) + ' Display');
+            if (p.specs.screen && p.specs.device_type === 'Apple Watch') parts.push(p.specs.screen + ' mm');
+            if (p.specs.ram) parts.push(p.specs.ram + ' GB RAM');
+            if (p.specs.ssd) parts.push(formatSSD(p.specs.ssd) + ' SSD');
+            return parts;
+        }
+
+        function originalPriceText(p) {
+            return p.original_price != null ? `${p.original_price.toFixed(2)} ${p.original_currency}` : '';
+        }
+
+        // Groups products by device model (or by exact configuration) and keeps
+        // the cheapest offer per country. `ranked` is sorted cheapest first.
+        function buildGroups(byConfig) {
+            const groups = new Map();
+            products.forEach(p => {
+                if (!(p.price > 0)) return;
+                const device = getDeviceFilterValue(p);
+                const s = p.specs;
+                const config = byConfig
+                    ? [s.chip, s.ram, s.ssd, s.device_type === 'Apple Watch' ? s.screen : ''].join('|')
+                    : '';
+                const key = [p.category, device, config].join('|');
+                let group = groups.get(key);
+                if (!group) {
+                    group = { category: p.category, device: device, offers: {} };
+                    groups.set(key, group);
+                }
+                const current = group.offers[p.country];
+                if (!current || p.price < current.price) group.offers[p.country] = p;
+            });
+            return Array.from(groups.values()).map(group => {
+                group.ranked = Object.values(group.offers).sort((a, b) => a.price - b.price || a.country.localeCompare(b.country));
+                group.best = group.ranked[0];
+                group.winners = group.ranked.filter(p => p.price - group.best.price < PRICE_EPSILON);
+                return group;
+            });
+        }
+
+        function diffText(p, best) {
+            const diff = p.price - best.price;
+            return `+${eur(diff)} (+${(diff / best.price * 100).toFixed(1)}%)`;
+        }
+
+        function renderBest() {
+            const byConfig = document.getElementById('bestMode').value === 'config';
+            const category = document.getElementById('bestCategory').value;
+            const groups = buildGroups(byConfig);
+            const html = [];
+
+            presentCategories().filter(c => category === 'All' || c === category).forEach(c => {
+                const rows = groups
+                    .filter(g => g.category === c)
+                    .sort((a, b) => a.device.localeCompare(b.device, undefined, { numeric: true }) || a.best.price - b.best.price);
+                if (!rows.length) return;
+
+                const body = rows.map(g => {
+                    const best = g.best;
+                    const others = g.ranked.slice(g.winners.length);
+                    const next = others[0];
+                    const worst = others.length > 1 ? others[others.length - 1] : null;
+                    const useNames = g.winners.length <= 2;
+                    const winners = g.winners.map(p =>
+                        `<a class="chip" href="${esc(p.url)}" target="_blank" title="${esc(countryName(p.country))}: ${esc(p.name)}">${esc(useNames ? countryName(p.country) : p.country)}</a>`
+                    ).join('');
+                    const original = originalPriceText(best);
+                    const otherCell = p => p
+                        ? `<a href="${esc(p.url)}" target="_blank" title="${esc(p.name)}">${esc(countryName(p.country))} ${eur(p.price)}</a><div class="sub">${diffText(p, best)}</div>`
+                        : '<span class="sub">—</span>';
+                    return `<tr>
+                        <td>
+                            <a class="link" href="#all" data-grid-device="${esc(g.device)}" title="Show all offers">${esc(g.device)}</a>
+                            <div class="sub">${esc(specParts(best).join(' • '))}</div>
+                        </td>
+                        <td>${winners}</td>
+                        <td class="num"><span class="price">${eur(best.price)}</span>${original ? `<div class="sub">${esc(original)}</div>` : ''}</td>
+                        <td class="num">${g.ranked.length === 1 ? '<span class="sub">only sold here</span>' : otherCell(next)}</td>
+                        <td class="num">${otherCell(worst)}</td>
+                    </tr>`;
+                }).join('');
+
+                html.push(`<div class="panel">
+                    <div class="panel-head"><h2>${esc(categoryLabel(c))}</h2></div>
+                    <div class="table-wrap"><table class="best-table">
+                        <thead><tr><th>${byConfig ? 'Configuration' : 'Device'}</th><th>Cheapest in</th><th>Price</th><th>Next best</th><th>Most expensive</th></tr></thead>
+                        <tbody>${body}</tbody>
+                    </table></div>
+                </div>`);
+            });
+
+            document.getElementById('bestContent').innerHTML = html.join('') || '<p class="view-note">No products found.</p>';
+        }
+
+        function renderCountries() {
+            const selected = document.getElementById('reviewCountry').value;
+            const groups = buildGroups(false);
+            const categories = presentCategories();
+            const countries = Array.from(new Set(products.map(p => p.country))).sort();
+            const html = [];
+
+            countries.filter(c => selected === 'All' || c === selected).forEach(country => {
+                const mine = groups.filter(g => g.offers[country]);
+                const bestCount = mine.filter(g => g.offers[country].price - g.best.price < PRICE_EPSILON).length;
+                const itemCount = products.filter(p => p.country === country).length;
+
+                const blocks = categories.map(c => {
+                    const rows = mine
+                        .filter(g => g.category === c)
+                        .sort((a, b) => a.offers[country].price - b.offers[country].price);
+                    if (!rows.length) return '';
+                    return `<div><h3>${esc(categoryLabel(c))}</h3>` + rows.map(g => {
+                        const p = g.offers[country];
+                        const isBest = p.price - g.best.price < PRICE_EPSILON;
+                        const verdict = isBest
+                            ? '<span class="best-badge">best price</span>'
+                            : `${diffText(p, g.best)} vs ${esc(g.best.country)}`;
+                        return `<a class="cat-row" href="${esc(p.url)}" target="_blank" title="${esc(p.name)}">
+                            <div><div class="cat-name">${esc(g.device)}</div><div class="sub">${esc(specParts(p).join(' • '))}</div></div>
+                            <div class="cat-price"><div class="price">${eur(p.price)}</div><div class="sub">${verdict}</div></div>
+                        </a>`;
+                    }).join('') + '</div>';
+                }).join('');
+
+                html.push(`<div class="panel">
+                    <div class="panel-head">
+                        <h2>${esc(countryName(country))} <span class="sub">${esc(country)}</span></h2>
+                        <div class="sub">${itemCount} items · best price for ${bestCount} of ${mine.length} devices · <a class="link" href="#all" data-grid-country="${esc(country)}">browse all</a></div>
+                    </div>
+                    <div class="country-cats">${blocks}</div>
+                </div>`);
+            });
+
+            document.getElementById('countriesContent').innerHTML = html.join('') || '<p class="view-note">No products found.</p>';
+        }
+
+        function currentView() {
+            const view = location.hash.replace('#', '');
+            return ['best', 'countries'].includes(view) ? view : 'all';
+        }
+
+        function renderView() {
+            const view = currentView();
+            document.querySelectorAll('[data-view]').forEach(el => { el.hidden = el.dataset.view !== view; });
+            document.querySelectorAll('.view-nav a').forEach(a => a.classList.toggle('active', a.dataset.nav === view));
+            if (view === 'best') renderBest();
+            if (view === 'countries') renderCountries();
+        }
+
+        function initViews() {
+            const categoryOptions = presentCategories().map(c => `<option value="${esc(c)}">${esc(categoryLabel(c))}</option>`).join('');
+            document.getElementById('bestCategory').insertAdjacentHTML('beforeend', categoryOptions);
+            const countryOptions = Array.from(new Set(products.map(p => p.country))).sort()
+                .map(c => `<option value="${esc(c)}">${esc(countryName(c))}</option>`).join('');
+            document.getElementById('reviewCountry').insertAdjacentHTML('beforeend', countryOptions);
+
+            // Links that jump back to the main grid with a device/country preselected.
+            document.addEventListener('click', event => {
+                const link = event.target.closest('[data-grid-device], [data-grid-country]');
+                if (!link) return;
+                ['country', 'category', 'device', 'ram', 'ssd'].forEach(name => {
+                    document.getElementById(name + 'Filter').value = 'All';
+                });
+                if (link.dataset.gridDevice) document.getElementById('deviceFilter').value = link.dataset.gridDevice;
+                if (link.dataset.gridCountry) document.getElementById('countryFilter').value = link.dataset.gridCountry;
+                renderGrid();
+                window.scrollTo(0, 0);
+            });
+
+            window.addEventListener('hashchange', renderView);
+            renderView();
+        }
+"""
+
+
 def generate_html(all_products):
     # Determine unique filter values
     countries = sorted(list(set(p['country'] for p in all_products)))
@@ -1161,7 +1425,6 @@ def generate_html(all_products):
         }}
         .header {{ text-align: center; margin-bottom: 30px; }}
         .header h1 {{ margin-bottom: 10px; }}
-        .theme-control {{ margin-top: 12px; }}
         .controls {{ display: flex; gap: 15px; justify-content: center; margin-bottom: 20px; flex-wrap: wrap; }}
         select {{ padding: 8px; border-radius: 8px; border: 1px solid var(--panel-border); font-size: 14px; background: var(--panel); color: var(--text); }}
         .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; max-width: 1200px; margin: 0 auto; }}
@@ -1179,7 +1442,8 @@ def generate_html(all_products):
         .price-row {{ display: flex; justify-content: space-between; align-items: flex-end; margin-top: 10px; }}
         .price {{ font-size: 18px; font-weight: 700; color: var(--price); }}
         .price-eur {{ font-size: 13px; color: var(--muted); }}
-        .attribution {{ position: absolute; top: 20px; right: 20px; font-size: 12px; color: var(--muted); }}
+        .attribution {{ position: absolute; top: 20px; right: 20px; font-size: 12px; color: var(--muted); text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }}
+        .attribution select {{ padding: 4px 6px; font-size: 12px; }}
         .attribution a {{ color: var(--accent); text-decoration: none; font-weight: 600; }}
         .attribution a:hover {{ text-decoration: underline; }}
         .issue-stats {{
@@ -1195,27 +1459,32 @@ def generate_html(all_products):
             color: var(--muted);
         }}
         a {{ text-decoration: none; color: inherit; }}
-    </style>
+{VIEWS_CSS}    </style>
 </head>
 <body>
     <div class="attribution">
-        made by <a href="https://gelosi.github.io" target="_blank">gelosi</a><br>
-        get notifications via <a href="https://refurb-tracker.com" target="_blank">refurb-tracker</a>
+        <div>
+            made by <a href="https://gelosi.github.io" target="_blank">gelosi</a><br>
+            get notifications via <a href="https://refurb-tracker.com" target="_blank">refurb-tracker</a>
+        </div>
+        <select id="themeFilter" onchange="setTheme(this.value)" aria-label="Theme">
+            <option value="system">Theme: System</option>
+            <option value="light">Theme: Light</option>
+            <option value="dark">Theme: Dark</option>
+        </select>
     </div>
     <div class="header">
         <h1>Apple Refurbished Tracker</h1>
         <p>Tracking {len(all_products)} items across {len(countries)} countries</p>
         <p style="font-size: 14px; color: var(--muted); margin-top: 5px;">Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-        <div class="theme-control">
-            <select id="themeFilter" onchange="setTheme(this.value)">
-                <option value="system">Theme: System</option>
-                <option value="light">Theme: Light</option>
-                <option value="dark">Theme: Dark</option>
-            </select>
-        </div>
+        <nav class="view-nav">
+            <a href="#all" data-nav="all">All products</a>
+            <a href="#best" data-nav="best">Best prices</a>
+            <a href="#countries" data-nav="countries">Country review</a>
+        </nav>
     </div>
 
-    <div class="controls">
+    <div class="controls" data-view="all">
         <select id="countryFilter" onchange="renderGrid()">
             <option value="All">All Countries</option>
             {''.join(html_option(c) for c in countries)}
@@ -1242,11 +1511,38 @@ def generate_html(all_products):
         </select>
     </div>
 
-    <div id="grid" class="grid"></div>
+    <div id="grid" class="grid" data-view="all"></div>
+
+    <div class="view" data-view="best" hidden>
+        <p class="view-note">Where each device is cheapest right now. Prices are compared in EUR; the specs shown are those of the cheapest offer.</p>
+        <div class="controls">
+            <select id="bestCategory" onchange="renderBest()">
+                <option value="All">All Categories</option>
+            </select>
+            <select id="bestMode" onchange="renderBest()">
+                <option value="model">Compare: by model</option>
+                <option value="config">Compare: by exact configuration</option>
+            </select>
+        </div>
+        <div id="bestContent"></div>
+    </div>
+
+    <div class="view" data-view="countries" hidden>
+        <p class="view-note">The cheapest offer for each device in every country, and how it compares with the best price elsewhere.</p>
+        <div class="controls">
+            <select id="reviewCountry" onchange="renderCountries()">
+                <option value="All">All Countries</option>
+            </select>
+        </div>
+        <div id="countriesContent"></div>
+    </div>
     {issue_stats_html}
 
     <script>
         const products = {json_data};
+        const COUNTRY_NAMES = {json.dumps(COUNTRY_NAMES)};
+        const CATEGORY_LABELS = {json.dumps(CATEGORY_LABELS)};
+        const CATEGORY_ORDER = {json.dumps(CATEGORIES)};
 
         // Explicit Lazy Loading to avoid rate limits
         const lazyObserver = new IntersectionObserver((entries, observer) => {{
@@ -1349,11 +1645,7 @@ def generate_html(all_products):
                 card.target = "_blank";
                 card.className = 'card';
                 
-                let specList = [];
-                if (p.specs.chip) specList.push(p.specs.chip);
-                if (p.specs.screen && (['MacBook Air', 'MacBook Pro', 'MacBook Neo', 'MacBook', 'iMac', 'Display'].includes(p.specs.device_type))) specList.push(formatScreen(p.specs.screen) + ' Display');
-                if (p.specs.ram) specList.push(p.specs.ram + ' GB RAM');
-                if (p.specs.ssd) specList.push(formatSSD(p.specs.ssd) + ' SSD');
+                const specList = specParts(p);
                 
                 const showOriginal = p.original_price != null;
                 
@@ -1380,11 +1672,13 @@ def generate_html(all_products):
             document.querySelectorAll('.lazy-image').forEach(img => lazyObserver.observe(img));
         }}
         
+{VIEWS_JS}
         // Initial render
         const savedTheme = localStorage.getItem('theme-preference') || 'system';
         document.getElementById('themeFilter').value = savedTheme;
         setTheme(savedTheme);
         renderGrid();
+        initViews();
     </script>
 </body>
 </html>"""
